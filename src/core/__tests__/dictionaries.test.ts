@@ -40,7 +40,7 @@ describe('Online Reference Tools Integration', () => {
   it('generates working URLs for Ambuda.org', () => {
     const url = getDictionaryUrl('citta', 'ambuda');
     expect(url).toContain('ambuda.org');
-    expect(url).toContain('/tools/dictionaries?q=citta');
+    expect(url).toContain('/tools/dictionaries/mw/citta');
   });
 
   it('generates working URLs for LearnSanskrit.cc', () => {

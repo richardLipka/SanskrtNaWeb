@@ -101,8 +101,8 @@ export interface LanguageAdapter {
   /** Available scripts / transcriptions for this language */
   getAvailableScripts(): ScriptOption[];
 
-  /** Transliterate text from one script/scheme to another */
-  transliterate(text: string, fromScript: string, toScript: string): string;
+  /** Transliterate text from one script/scheme to another (options may carry e.g. Czech phonetic rules) */
+  transliterate(text: string, fromScript: string, toScript: string, options?: Record<string, any>): string;
 
   /** Morphologically analyze a word or phrase with optional localization */
   analyzeWord(word: string, context?: { sentence?: string; pos?: string; lang?: SupportedLanguage }): Promise<UniversalWordAnalysis>;

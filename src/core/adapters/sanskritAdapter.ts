@@ -19,7 +19,8 @@ import {
   detectVerseMeter,
   splitSandhiWasm
 } from '../lemmatizer/vidyutAdapter.ts';
-import { devanagariToIast, iastToCzechPhonetic } from '../transliteration/engine.ts';
+import { devanagariToIast, iastToCzechPhonetic, normalizeSchemeId } from '../transliteration/engine.ts';
+import { CzechPhoneticRules } from '../types/schema.ts';
 import { getDictionaryUrl } from '../dictionaries/dictionaryBuilder.ts';
 
 import { SupportedLanguage } from '../i18n/types.ts';
@@ -38,30 +39,37 @@ export class SanskritLanguageAdapter implements LanguageAdapter {
     ];
   }
 
-  transliterate(text: string, fromScript: string, toScript: string): string {
+  transliterate(
+    text: string,
+    fromScript: string,
+    toScript: string,
+    options?: { czechRules?: Partial<CzechPhoneticRules> }
+  ): string {
     if (!text) return '';
 
-    const from = fromScript.toLowerCase();
-    const to = toScript.toLowerCase();
+    const from = normalizeSchemeId(fromScript) ?? fromScript.toLowerCase();
+    const to = normalizeSchemeId(toScript) ?? toScript.toLowerCase();
 
     // 1. Direct match
     if (from === to) return text;
 
-    // 2. Czech phonetic target
+    // 2. Czech phonetic target – any source scheme is first brought to IAST
     if (to === 'cs_phonetic') {
-      const iast = from === 'devanagari' ? devanagariToIast(text) : text;
-      return iastToCzechPhonetic(iast);
+      let iast = text;
+      if (from === 'devanagari') iast = devanagariToIast(text);
+      else if (from !== 'iast') iast = transliterateLipi(text, from, 'iast');
+      return iastToCzechPhonetic(iast, options?.czechRules);
     }
 
-    // 3. WebAssembly vidyut-lipi
+    // 3. WebAssembly vidyut-lipi (with table fallback)
     return transliterateLipi(text, from, to);
   }
 
   async analyzeWord(word: string, context?: { sentence?: string; pos?: string; lang?: SupportedLanguage }): Promise<UniversalWordAnalysis> {
     const trimmed = word.trim();
-    const fullAnalysis = await analyzeSanskritWordFull(trimmed);
-    const first = fullAnalysis.analyses[0];
     const lang = context?.lang || 'cs';
+    const fullAnalysis = await analyzeSanskritWordFull(trimmed, lang);
+    const first = fullAnalysis.analyses[0];
 
     // Determine lemma
     const lemma = first?.lemma || (trimmed.replace(/[।॥,;.!?]/g, ''));
@@ -85,14 +93,18 @@ export class SanskritLanguageAdapter implements LanguageAdapter {
           termsText: s.termsText
         }))
       };
-    } else {
+    } else if (first?.pos !== 'indeclinable') {
       // Fallback derivation attempt
       const derived = derivePrakriyaTree(lemma, {
         pos: first?.pos === 'verb' ? 'verb' : 'noun',
         gender: first?.gender,
         case: first?.case,
         number: first?.number,
-        root: first?.root
+        root: first?.dhatu || first?.root,
+        gana: first?.gana,
+        person: first?.person,
+        voice: first?.voice,
+        lang
       });
       if (derived) {
         derivationTree = {

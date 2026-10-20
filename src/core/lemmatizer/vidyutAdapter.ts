@@ -1,12 +1,18 @@
 /**
  * Vidyut WebAssembly Adapter & Integration Layer
- * 
+ *
  * Powered by Ambuda Vidyut (https://github.com/ambuda-org/vidyut)
  * Copyright (c) 2022 ambuda.org (Arun Prasad and Ambuda Project contributors)
  * Licensed under the MIT License.
  */
 
-import { devanagariToIast, iastToDevanagari, registerVidyutTransliterator } from '../transliteration/engine.ts';
+import {
+  devanagariToIast,
+  iastToCzechPhonetic,
+  normalizeSchemeId,
+  registerVidyutTransliterator,
+  transliterateTable
+} from '../transliteration/engine.ts';
 import { analyzeSanskritWord, MorphAnalysis } from './sanskritLemmatizer.ts';
 import { SupportedLanguage } from '../i18n/types.ts';
 import { getMeterWeightLabel } from '../i18n/linguistics/index.ts';
@@ -98,56 +104,65 @@ export interface VidyutAnalysisResult {
   attribution: typeof VIDYUT_METADATA;
 }
 
+export interface MeterClassification {
+  /** Meter name in IAST (e.g. "Śārdūlavikrīḍita"), null if unknown */
+  name: string | null;
+  /** Raw SLP1 name as returned by vidyut-chandas */
+  rawName: string | null;
+  matchType: 'none' | 'prefix' | 'pada' | 'full';
+  aksharas: MeterAksharaInfo[];
+}
+
+/** Devanagari letters and signs – excludes daṇḍas (U+0964/5) and digits, which IAST texts use too. */
+const DEVANAGARI_LETTER = /[\u0900-\u0963\u0971-\u097F]/;
+
 // Vidyut WASM module instance and loaded state
 let vidyutModule: any = null;
-let isVidyutLoading = false;
+let vidyutLoadPromise: Promise<any> | null = null;
 let vidyutLoadError: Error | null = null;
 
 /**
  * Asynchronously initialize the Vidyut WebAssembly module.
- * Safe to call multiple times; memoizes the promise.
+ * Safe to call multiple times and concurrently; all callers share one load.
  */
 export async function loadVidyutWasm(): Promise<any> {
   if (vidyutModule) return vidyutModule;
   if (vidyutLoadError) throw vidyutLoadError;
+  if (vidyutLoadPromise) return vidyutLoadPromise;
 
-  if (isVidyutLoading) {
-    while (isVidyutLoading) {
-      await new Promise((resolve) => setTimeout(resolve, 50));
+  vidyutLoadPromise = (async () => {
+    try {
+      const vidyut = await import('@siva-sh/vidyut');
+
+      const isNodeEnv = typeof process !== 'undefined' && Boolean(process.versions?.node);
+      if (isNodeEnv) {
+        const { readFile } = await import('node:fs/promises');
+        const wasmUrl = (await import('@siva-sh/vidyut/wasm-url')).default;
+        const wasmBuffer = await readFile(wasmUrl);
+        await vidyut.default({ module_or_path: wasmBuffer });
+      } else {
+        await vidyut.default();
+      }
+
+      vidyutModule = vidyut;
+
+      // Register high-performance vidyut-lipi transliterator as preferred engine.
+      // Calls the module directly so a failure can fall back to the tables without recursion.
+      registerVidyutTransliterator((deva: string) =>
+        vidyut.transliterate(deva, vidyut.Scheme.Devanagari, vidyut.Scheme.Iast)
+      );
+
+      return vidyut;
+    } catch (err: any) {
+      vidyutLoadError = err instanceof Error ? err : new Error(String(err));
+      console.warn('[Vidyut WASM] Failed to load WebAssembly, using local rule fallback:', err);
+      throw vidyutLoadError;
+    } finally {
+      vidyutLoadPromise = null;
     }
-    if (vidyutModule) return vidyutModule;
-    if (vidyutLoadError) throw vidyutLoadError;
-  }
+  })();
 
-  isVidyutLoading = true;
-  try {
-    const vidyut = await import('@siva-sh/vidyut');
-    
-    const isNodeEnv = typeof process !== 'undefined' && Boolean(process.versions?.node);
-    if (isNodeEnv) {
-      const { readFile } = await import('node:fs/promises');
-      const wasmUrl = (await import('@siva-sh/vidyut/wasm-url')).default;
-      const wasmBuffer = await readFile(wasmUrl);
-      await vidyut.default({ module_or_path: wasmBuffer });
-    } else {
-      await vidyut.default();
-    }
-
-    vidyutModule = vidyut;
-    isVidyutLoading = false;
-
-    // Register high-performance vidyut-lipi transliterator as preferred engine
-    registerVidyutTransliterator((deva: string) => {
-      return transliterateLipi(deva, 'devanagari', 'iast');
-    });
-
-    return vidyut;
-  } catch (err: any) {
-    vidyutLoadError = err;
-    isVidyutLoading = false;
-    console.warn('[Vidyut WASM] Failed to load WebAssembly, using local rule fallback:', err);
-    throw err;
-  }
+  return vidyutLoadPromise;
 }
 
 /**
@@ -158,25 +173,28 @@ export function isVidyutReady(): boolean {
 }
 
 /**
- * Map friendly scheme string to Vidyut Scheme enum
+ * Map friendly scheme string to Vidyut Scheme enum (null when unsupported).
  */
 function toVidyutScheme(scheme: string): any {
   if (!vidyutModule) return null;
   const { Scheme } = vidyutModule;
-  const s = String(scheme).toLowerCase();
-  switch (s) {
-    case 'devanagari':
-    case 'deva': return Scheme.Devanagari;
+  switch (normalizeSchemeId(scheme)) {
+    case 'devanagari': return Scheme.Devanagari;
     case 'iast': return Scheme.Iast;
     case 'slp1': return Scheme.Slp1;
-    case 'hk':
-    case 'harvardkyoto': return Scheme.HarvardKyoto;
-    default: return Scheme.Iast;
+    case 'hk': return Scheme.HarvardKyoto;
+    case 'iso15919': return Scheme.Iso15919;
+    case 'itrans': return Scheme.Itrans;
+    case 'velthuis': return Scheme.Velthuis;
+    case 'wx': return Scheme.Wx;
+    default: return null;
   }
 }
 
 /**
- * Fast WebAssembly transliteration using vidyut-lipi
+ * Fast WebAssembly transliteration using vidyut-lipi, with table-based fallback.
+ * Accepts scheme names case-insensitively ('Devanagari', 'iast', 'hk', 'harvard_kyoto',
+ * 'slp1', 'iso15919', 'itrans', 'velthuis', 'wx') and 'cs_phonetic' as a target.
  */
 export function transliterateLipi(
   input: string,
@@ -184,69 +202,83 @@ export function transliterateLipi(
   to: string
 ): string {
   if (!input) return '';
-  const toL = String(to).toLowerCase();
 
-  if (!vidyutModule) {
-    if (toL === 'devanagari' || toL === 'deva') {
-      return iastToDevanagari(input);
-    }
-    return devanagariToIast(input);
+  if (normalizeSchemeId(to) === 'cs_phonetic') {
+    return iastToCzechPhonetic(transliterateLipi(input, from, 'iast'));
   }
 
-  try {
-    const fromScheme = toVidyutScheme(from);
-    const toScheme = toVidyutScheme(to);
-    return vidyutModule.transliterate(input, fromScheme, toScheme);
-  } catch (_e) {
-    if (toL === 'devanagari' || toL === 'deva') {
-      return iastToDevanagari(input);
+  const fromScheme = toVidyutScheme(from);
+  const toScheme = toVidyutScheme(to);
+  if (vidyutModule && fromScheme !== null && toScheme !== null) {
+    try {
+      return vidyutModule.transliterate(input, fromScheme, toScheme);
+    } catch {
+      // fall through to the table engine
     }
-    return devanagariToIast(input);
   }
+
+  return transliterateTable(input, from, to);
+}
+
+function toSlp1ForChandas(input: string): string {
+  const { Scheme, transliterate } = vidyutModule;
+  const isDeva = DEVANAGARI_LETTER.test(input);
+  const rawSlp1 = transliterate(input, isDeva ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
+  // Keep line breaks (pāda boundaries) but drop digits, dandas and punctuation
+  return rawSlp1
+    .split('\n')
+    .map((line: string) => line.replace(/[^a-zA-Z~\s]/g, ' ').replace(/\s+/g, ' ').trim())
+    .filter((line: string) => line.length > 0)
+    .join('\n');
+}
+
+function toAksharaInfo(ak: { text: string; weight: 'G' | 'L' }, lang: SupportedLanguage): MeterAksharaInfo {
+  const { Scheme, transliterate } = vidyutModule;
+  const deva = transliterate(ak.text, Scheme.Slp1, Scheme.Devanagari);
+  return {
+    text: ak.text,
+    deva,
+    iast: transliterate(ak.text, Scheme.Slp1, Scheme.Iast),
+    devanagari: deva,
+    weight: ak.weight,
+    weightLabelCs: ak.weight === 'G' ? 'guru (dlouhá/těžká —)' : 'laghu (krátká/lehká ∪)',
+    weightLabel: getMeterWeightLabel(ak.weight, lang)
+  };
+}
+
+/**
+ * Converts an SLP1 meter name from vidyut-chandas ("SArdUlavikrIqita") to capitalized IAST.
+ */
+export function formatMeterName(slp1Name: string | null | undefined): string | null {
+  if (!slp1Name) return null;
+  const iast = vidyutModule
+    ? vidyutModule.transliterate(slp1Name, vidyutModule.Scheme.Slp1, vidyutModule.Scheme.Iast)
+    : transliterateTable(slp1Name, 'slp1', 'iast');
+  return iast.charAt(0).toUpperCase() + iast.slice(1);
 }
 
 /**
  * Akṣara segmentation and syllabification using vidyut-akshara / Chandas
  */
 export function segmentAksharas(input: string, lang: SupportedLanguage = 'cs'): MeterAksharaInfo[] {
-  if (!input) return [];
-  if (!vidyutModule) return [];
+  if (!input || !vidyutModule) return [];
 
   try {
-    const { Chandas, Scheme, transliterate } = vidyutModule;
-    const isDeva = /[\u0900-\u097F]/.test(input);
-    const rawSlp1 = transliterate(input, isDeva ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
-    const slp1 = rawSlp1.replace(/[^a-zA-Z~\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const slp1 = toSlp1ForChandas(input);
     if (!slp1) return [];
 
-    const chandas = new Chandas();
+    const chandas = new vidyutModule.Chandas();
     try {
       const res = chandas.classify(slp1);
       const aksharas: MeterAksharaInfo[] = [];
-
-      if (res.aksharas) {
-        for (const pada of res.aksharas) {
-          for (const ak of pada) {
-            const deva = transliterate(ak.text, Scheme.Slp1, Scheme.Devanagari);
-            const iast = transliterate(ak.text, Scheme.Slp1, Scheme.Iast);
-            const weightLabel = getMeterWeightLabel(ak.weight, lang);
-            aksharas.push({
-              text: ak.text,
-              deva,
-              iast,
-              devanagari: deva,
-              weight: ak.weight,
-              weightLabelCs: ak.weight === 'G' ? 'guru (dlouhá/těžká —)' : 'laghu (krátká/lehká ∪)',
-              weightLabel
-            });
-          }
-        }
+      for (const pada of res.aksharas || []) {
+        for (const ak of pada) aksharas.push(toAksharaInfo(ak, lang));
       }
       return aksharas;
     } finally {
       chandas.free();
     }
-  } catch (e) {
+  } catch {
     return [];
   }
 }
@@ -298,44 +330,28 @@ export function splitSandhiWasm(wordIast: string): SandhiDecomposition[] {
 }
 
 /**
- * Classify metrical structure (Chandas) and akṣara weights using Vidyut WASM
+ * Classify metrical structure (Chandas) and akṣara weights using Vidyut WASM.
+ * Line breaks in the input are treated as pāda boundaries.
  */
-export function classifyMeterWasm(verseIast: string, lang: SupportedLanguage = 'cs'): { name: string | null; aksharas: MeterAksharaInfo[] } | null {
+export function classifyMeterWasm(verseText: string, lang: SupportedLanguage = 'cs'): MeterClassification | null {
   if (!vidyutModule) return null;
 
   try {
-    const { Chandas, Scheme, transliterate } = vidyutModule;
-    const isDeva = /[\u0900-\u097F]/.test(verseIast);
-    const rawSlp1 = transliterate(verseIast, isDeva ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
-    const slp1 = rawSlp1.replace(/[^a-zA-Z~\s]/g, ' ').replace(/\s+/g, ' ').trim();
+    const slp1 = toSlp1ForChandas(verseText);
     if (!slp1) return null;
 
-    const chandas = new Chandas();
+    const chandas = new vidyutModule.Chandas();
     try {
       const classification = chandas.classify(slp1);
-
       const flatAksharas: MeterAksharaInfo[] = [];
-      if (classification.aksharas) {
-        for (const pada of classification.aksharas) {
-          for (const ak of pada) {
-            const deva = transliterate(ak.text, Scheme.Slp1, Scheme.Devanagari);
-            const iast = transliterate(ak.text, Scheme.Slp1, Scheme.Iast);
-            const weightLabel = getMeterWeightLabel(ak.weight, lang);
-            flatAksharas.push({
-              text: ak.text,
-              deva,
-              iast,
-              devanagari: deva,
-              weight: ak.weight,
-              weightLabelCs: ak.weight === 'G' ? 'guru (dlouhá/těžká —)' : 'laghu (krátká/lehká ∪)',
-              weightLabel
-            });
-          }
-        }
+      for (const pada of classification.aksharas || []) {
+        for (const ak of pada) flatAksharas.push(toAksharaInfo(ak, lang));
       }
 
       return {
-        name: classification.name,
+        name: formatMeterName(classification.name),
+        rawName: classification.name ?? null,
+        matchType: classification.matchType || (classification.name ? 'full' : 'none'),
         aksharas: flatAksharas
       };
     } finally {
@@ -347,81 +363,116 @@ export function classifyMeterWasm(verseIast: string, lang: SupportedLanguage = '
   }
 }
 
+const SPEAKER_TAG = /(^|\s)(uvāca|uvācur|ūcuḥ|abravīt|उवाच|ऊचुः|अब्रवीत्)(\s|$)/i;
+
 /**
- * Detect verse meter across pādas and analyze rhythmic structure
+ * Detect verse meter across pādas and analyze rhythmic structure.
+ *
+ * Order of evidence: user override → full Vidyut Chandas match of the whole verse →
+ * Anuṣṭubh (śloka) heuristics → syllable-count families (Triṣṭubh, Jagatī, Gāyatrī) →
+ * pāda-level Vidyut match → sūtra / free rhythm.
  */
 export function detectVerseMeter(verseText: string, specifiedMeter?: string, lang: SupportedLanguage = 'cs'): VerseMeterAnalysis {
-  const isDeva = /[\u0900-\u097F]/.test(verseText);
-  const cleanIast = isDeva ? devanagariToIast(verseText) : verseText;
-
-  // Split into pādas (by newline, danda, double-danda, semicolon)
-  const lines = cleanIast
+  // Split into pādas on the original text (by newline, danda, double-danda, semicolon) –
+  // transliteration may turn dandas into periods. Segments without letters, such as verse
+  // numbers between double dandas ("॥ 2.47 ॥"), are dropped.
+  const lines = verseText
     .split(/[\n\r।॥|;]+/)
     .map((l) => l.trim())
-    .filter((l) => l.length > 0);
+    .map((l) => (DEVANAGARI_LETTER.test(l) ? devanagariToIast(l) : l))
+    .filter((l) => /\p{L}/u.test(l));
 
-  const rawPadas = lines.length > 0 ? lines : [cleanIast];
+  const rawPadas = lines.length > 0 ? lines : [verseText];
   const padasOutput: VerseMeterAnalysis['padas'] = [];
   let totalAksharas = 0;
-  let detectedName: string | null = null;
   const allAksharas: MeterAksharaInfo[] = [];
 
   for (let idx = 0; idx < rawPadas.length; idx++) {
-    const padaLine = rawPadas[idx];
-    const aksharas = segmentAksharas(padaLine, lang);
+    const aksharas = segmentAksharas(rawPadas[idx], lang);
     totalAksharas += aksharas.length;
     allAksharas.push(...aksharas);
-
-    const pattern = aksharas.map((a) => (a.weight === 'G' ? '—' : '∪')).join(' ');
-    const isSpeakerTag = idx === 0 && /\b(uvāca|uvācur|ūcuḥ|abravīt|उवाच|ऊचुः|अब्रवीत्)\b/i.test(padaLine);
-
-    if (!detectedName && vidyutModule && !isSpeakerTag) {
-      const meterRes = classifyMeterWasm(padaLine, lang);
-      if (meterRes?.name) detectedName = meterRes.name;
-    }
 
     padasOutput.push({
       padaIndex: idx + 1,
       aksharas,
       syllableCount: aksharas.length,
-      pattern
+      pattern: aksharas.map((a) => (a.weight === 'G' ? '—' : '∪')).join(' ')
     });
   }
 
-  const isSpeakerTagFirst = rawPadas.length > 1 && /\b(uvāca|uvācur|ūcuḥ|abravīt|उवाच|ऊचुः|अब्रवीत्)\b/i.test(rawPadas[0]);
+  const isSpeakerTagFirst = rawPadas.length > 1 && SPEAKER_TAG.test(rawPadas[0]);
+  const metricalLines = isSpeakerTagFirst ? rawPadas.slice(1) : rawPadas;
   const metricalPadas = isSpeakerTagFirst ? padasOutput.slice(1) : padasOutput;
   const metricalAksharas = metricalPadas.reduce((sum, p) => sum + p.syllableCount, 0);
+  const counts = metricalPadas.map((p) => p.syllableCount);
+  const allNear = (target: number, tolerance: number) => counts.every((c) => Math.abs(c - target) <= tolerance);
+
+  // Vidyut Chandas: whole verse first, then individual pādas
+  let fullMatchName: string | null = null;
+  let padaMatchName: string | null = null;
+  if (vidyutModule && !specifiedMeter) {
+    const whole = classifyMeterWasm(metricalLines.join('\n'), lang);
+    if (whole?.name && whole.matchType === 'full') {
+      fullMatchName = whole.name;
+    } else if (whole?.name) {
+      padaMatchName = whole.name;
+    }
+    for (let i = 0; !fullMatchName && !padaMatchName && i < metricalLines.length; i++) {
+      const res = classifyMeterWasm(metricalLines[i], lang);
+      if (res?.name) padaMatchName = res.name;
+    }
+  }
 
   const isAnushtubh =
     metricalAksharas === 32 ||
-    totalAksharas === 32 ||
-    (metricalPadas.length === 4 && metricalPadas.every((p) => Math.abs(p.syllableCount - 8) <= 2)) ||
-    (metricalPadas.length === 2 && metricalPadas.every((p) => Math.abs(p.syllableCount - 16) <= 3));
+    (metricalPadas.length === 4 && allNear(8, 2)) ||
+    (metricalPadas.length === 2 && allNear(16, 3));
+  const isTristubh = metricalAksharas === 44 || (metricalPadas.length === 4 && allNear(11, 1)) || (metricalPadas.length === 2 && allNear(22, 1));
+  const isJagati = metricalAksharas === 48 || (metricalPadas.length === 4 && allNear(12, 1)) || (metricalPadas.length === 2 && allNear(24, 1));
+  const isGayatri = metricalAksharas === 24 || (metricalPadas.length === 3 && allNear(8, 1));
 
+  const isEn = lang === 'en';
   let finalName = specifiedMeter;
   let notes = '';
-  const isEn = lang === 'en';
+  let matchType = 'free';
+
   if (specifiedMeter) {
     notes = isEn ? 'User specified' : 'Nastaveno uživatelem';
+    matchType = 'user_override';
+  } else if (fullMatchName) {
+    finalName = fullMatchName;
+    notes = isEn ? `Exact match from Vidyut Chandas: ${fullMatchName}` : `Přesná shoda z databáze Vidyut Chandas: ${fullMatchName}`;
+    matchType = 'exact';
+  } else if (isAnushtubh) {
+    finalName = isEn ? 'Anuṣṭubh (Śloka – 4 × 8 syllables)' : 'Anuṣṭubh (Śloka – 4 × 8 slabik)';
+    notes = isEn
+      ? (isSpeakerTagFirst ? 'Introductory speech + classical epic Anuṣṭubh meter' : 'Detected classical epic Anuṣṭubh meter')
+      : (isSpeakerTagFirst ? 'Uvedení mluvčího + klasické epické metrum Anuṣṭubh' : 'Detekováno klasické epické metrum Anuṣṭubh');
+    matchType = 'heuristics';
+  } else if (isTristubh) {
+    finalName = isEn ? 'Triṣṭubh (4 × 11 syllables)' : 'Triṣṭubh (4 × 11 slabik)';
+    notes = isEn ? 'Vedic / classical Triṣṭubh meter' : 'Védské / klasické metrum Triṣṭubh';
+    if (padaMatchName) notes += isEn ? ` (pāda pattern: ${padaMatchName})` : ` (vzorec pády: ${padaMatchName})`;
+    matchType = 'heuristics';
+  } else if (isJagati) {
+    finalName = isEn ? 'Jagatī (4 × 12 syllables)' : 'Jagatī (4 × 12 slabik)';
+    notes = isEn ? 'Vedic / classical Jagatī meter' : 'Védské / klasické metrum Jagatī';
+    if (padaMatchName) notes += isEn ? ` (pāda pattern: ${padaMatchName})` : ` (vzorec pády: ${padaMatchName})`;
+    matchType = 'heuristics';
+  } else if (isGayatri) {
+    finalName = isEn ? 'Gāyatrī (3 × 8 syllables)' : 'Gāyatrī (3 × 8 slabik)';
+    notes = isEn ? 'Vedic Gāyatrī meter' : 'Védské metrum Gāyatrī';
+    matchType = 'heuristics';
+  } else if (padaMatchName) {
+    finalName = padaMatchName;
+    notes = isEn ? `Pāda-level match from Vidyut Chandas: ${padaMatchName}` : `Shoda na úrovni pády z databáze Vidyut Chandas: ${padaMatchName}`;
+    matchType = 'pada';
+  } else if (metricalAksharas < 20) {
+    finalName = isEn ? 'Sūtra (aphorism / prose meter)' : 'Sūtra (aforismus / prozaické metrum)';
+    notes = isEn ? 'Aphoristic length (< 20 syllables)' : 'Aforistický rozsah (méně než 20 slabik)';
   } else {
-    if (isAnushtubh) {
-      finalName = isEn ? 'Anuṣṭubh (Śloka – 4 × 8 syllables)' : 'Anuṣṭubh (Śloka – 4 × 8 slabik)';
-      notes = isEn
-        ? (isSpeakerTagFirst ? 'Introductory speech + classical epic Anuṣṭubh meter' : 'Detected classical epic Anuṣṭubh meter')
-        : (isSpeakerTagFirst ? 'Uvedení mluvčího + klasické epické metrum Anuṣṭubh' : 'Detekováno klasické epické metrum Anuṣṭubh');
-    } else if (detectedName) {
-      finalName = `${detectedName}`;
-      notes = isEn ? `Exact match from Vidyut Chandas: ${detectedName}` : `Přesná shoda z databáze Vidyut Chandas: ${detectedName}`;
-    } else if (metricalAksharas === 44 || totalAksharas === 44) {
-      finalName = isEn ? 'Triṣṭubh (4 × 11 syllables)' : 'Triṣṭubh (4 × 11 slabik)';
-      notes = isEn ? 'Vedic / classical Triṣṭubh meter' : 'Védské / klasické metrum Triṣṭubh';
-    } else if (metricalAksharas < 20 && totalAksharas < 20) {
-      finalName = isEn ? 'Sūtra (aphorism / prose meter)' : 'Sūtra (aforismus / prozaické metrum)';
-      notes = isEn ? 'Aphoristic length (< 20 syllables)' : 'Aforistický rozsah (méně než 20 slabik)';
-    } else {
-      finalName = isEn ? `Rhythmic verse (${metricalAksharas} syllables)` : `Rytmický verš (${metricalAksharas} slabik)`;
-      notes = isEn ? 'Free metrical structure' : 'Volná metrická struktura';
-    }
+    finalName = isEn ? `Rhythmic verse (${metricalAksharas} syllables)` : `Rytmický verš (${metricalAksharas} slabik)`;
+    notes = isEn ? 'Free metrical structure' : 'Volná metrická struktura';
   }
 
   const unspecified = isEn ? 'Unspecified' : 'Nespecifikováno';
@@ -429,13 +480,73 @@ export function detectVerseMeter(verseText: string, specifiedMeter?: string, lan
   return {
     meter: finalName || unspecified,
     meterName: finalName || unspecified,
-    matchType: specifiedMeter ? 'user_override' : (detectedName ? 'exact' : (isAnushtubh ? 'heuristics' : 'free')),
+    matchType,
     totalAksharas,
     aksharas: allAksharas,
     padas: padasOutput,
-    isClassicalAnushtubh: isAnushtubh,
+    isClassicalAnushtubh: !specifiedMeter && !fullMatchName && isAnushtubh,
     notes
   };
+}
+
+const GANA_BY_CLASS: Record<string, string> = {
+  '1': 'Bhvadi', '2': 'Adadi', '3': 'Juhotyadi', '4': 'Divadi', '5': 'Svadi',
+  '6': 'Tudadi', '7': 'Rudhadi', '8': 'Tanadi', '9': 'Kryadi', '10': 'Curadi'
+};
+const GANA_NAMES = new Set(Object.values(GANA_BY_CLASS).concat(['Kandvadi']));
+
+const VIBHAKTI_MAP: Record<string, string> = {
+  nominative: 'Prathama', '1': 'Prathama', prathama: 'Prathama',
+  accusative: 'Dvitiya', '2': 'Dvitiya', dvitiya: 'Dvitiya',
+  instrumental: 'Trtiya', '3': 'Trtiya', trtiya: 'Trtiya',
+  dative: 'Caturthi', '4': 'Caturthi', caturthi: 'Caturthi',
+  ablative: 'Panchami', '5': 'Panchami', panchami: 'Panchami',
+  genitive: 'Sasthi', '6': 'Sasthi', sasthi: 'Sasthi',
+  locative: 'Saptami', '7': 'Saptami', saptami: 'Saptami',
+  vocative: 'Sambodhana', '8': 'Sambodhana', sambodhana: 'Sambodhana'
+};
+
+const NOTE_LABELS = {
+  cs: {
+    tinanta: 'slovesný tvar (tiṅanta)',
+    subanta: 'jmenný tvar (subanta)',
+    root: 'kořen',
+    stem: 'kmen',
+    gana: (g: string, n: string) => `${g} gaṇa${n ? ` (${n}. třída)` : ''}`,
+    lat: 'Laṭ (prézens indikativ)',
+    vacana: { Eka: 'jednotné číslo', Dvi: 'dvojné číslo', Bahu: 'množné číslo' } as Record<string, string>,
+    purusha: { Prathama: '3. osoba', Madhyama: '2. osoba', Uttama: '1. osoba' } as Record<string, string>,
+    prayoga: (pada?: string) => pada === 'Atmanepada' ? 'Kartari, ātmanepada (médium)' : 'Kartari (činný rod / aktivum)',
+    vibhakti: {
+      Prathama: '1. pád (nominativ)', Dvitiya: '4. pád (akuzativ)', Trtiya: '7. pád (instrumentál)',
+      Caturthi: '3. pád (dativ)', Panchami: 'ablativ', Sasthi: '2. pád (genitiv)',
+      Saptami: '6. pád (lokál)', Sambodhana: '5. pád (vokativ)'
+    } as Record<string, string>,
+    linga: { Pum: 'mužský rod', Stri: 'ženský rod', Napumsaka: 'střední rod' } as Record<string, string>
+  },
+  en: {
+    tinanta: 'verbal form (tiṅanta)',
+    subanta: 'nominal form (subanta)',
+    root: 'root',
+    stem: 'stem',
+    gana: (g: string, n: string) => `${g} gaṇa${n ? ` (class ${n})` : ''}`,
+    lat: 'Laṭ (present indicative)',
+    vacana: { Eka: 'singular', Dvi: 'dual', Bahu: 'plural' } as Record<string, string>,
+    purusha: { Prathama: '3rd person', Madhyama: '2nd person', Uttama: '1st person' } as Record<string, string>,
+    prayoga: (pada?: string) => pada === 'Atmanepada' ? 'Kartari, ātmanepada (middle)' : 'Kartari (active)',
+    vibhakti: {
+      Prathama: 'nominative', Dvitiya: 'accusative', Trtiya: 'instrumental', Caturthi: 'dative',
+      Panchami: 'ablative', Sasthi: 'genitive', Saptami: 'locative', Sambodhana: 'vocative'
+    } as Record<string, string>,
+    linga: { Pum: 'masculine', Stri: 'feminine', Napumsaka: 'neuter' } as Record<string, string>
+  }
+};
+
+/**
+ * Extracts a bare dhātu from display forms such as "√bhū (bhav)" or "bhū".
+ */
+export function cleanDhatu(root: string): string {
+  return root.trim().replace(/^√/, '').split(/[\s(]/)[0].trim();
 }
 
 /**
@@ -453,10 +564,14 @@ export function derivePrakriyaTree(
     number?: string;
     vacana?: string;
     root?: string;
-    gana?: string;
+    gana?: string | number;
+    person?: string;
+    voice?: string;
+    lang?: SupportedLanguage;
   }
 ): PrakriyaDerivationResult | null {
   if (!vidyutModule) return null;
+  const labels = NOTE_LABELS[options?.lang === 'en' ? 'en' : 'cs'];
 
   try {
     const { Vyakarana, Scheme, transliterate } = vidyutModule;
@@ -464,58 +579,59 @@ export function derivePrakriyaTree(
 
     try {
       const cleanInput = wordOrLemma.trim().replace(/^√/, '');
-      const isDeva = /[\u0900-\u097F]/.test(cleanInput);
+      const isDeva = DEVANAGARI_LETTER.test(cleanInput);
       const slp1 = transliterate(cleanInput, isDeva ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
 
-      // Check verbal derivation first if specified or root starts with √
+      const n = String(options?.number || options?.vacana || '').toLowerCase();
+      const vacana = (n === 'plural' || n === 'bahu') ? 'Bahu' : ((n === 'dual' || n === 'dvi') ? 'Dvi' : 'Eka');
+
+      // Verbal derivation when a verb or root is given
       if (options?.pos === 'verb' || options?.root) {
-        const rootSlp1 = options.root ? transliterate(options.root.replace(/^√/, ''), Scheme.Iast, Scheme.Slp1) : slp1;
-        const tinantas = vyakarana.deriveTinantas({
-          dhatu: {
-            aupadeshika: rootSlp1,
-            gana: (options.gana as any) || 'Bhvadi',
-            prefixes: [],
-            sanadi: []
-          },
+        const dhatu = cleanDhatu(options?.root || cleanInput);
+        const rootSlp1 = transliterate(dhatu, DEVANAGARI_LETTER.test(dhatu) ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
+        const ganaKey = String(options?.gana ?? '').trim();
+        const gana = GANA_BY_CLASS[ganaKey] || (GANA_NAMES.has(ganaKey) ? ganaKey : 'Bhvadi');
+        const classNumber = Object.entries(GANA_BY_CLASS).find(([, g]) => g === gana)?.[0] || '';
+        const person = String(options?.person || '3rd');
+        const purusha = person.startsWith('1') ? 'Uttama' : (person.startsWith('2') ? 'Madhyama' : 'Prathama');
+        const pada = options?.voice === 'middle' ? 'Atmanepada' : (options?.voice === 'active' ? 'Parasmaipada' : undefined);
+
+        const args: any = {
+          dhatu: { aupadeshika: rootSlp1, gana, prefixes: [], sanadi: [] },
           lakara: 'Lat',
           prayoga: 'Kartari',
-          purusha: 'Prathama',
-          vacana: 'Eka',
+          purusha,
+          vacana,
           skip_at_agama: false
-        });
+        };
+        if (pada) args.pada = pada;
+
+        let tinantas = vyakarana.deriveTinantas(args);
+        if ((!tinantas || tinantas.length === 0) && pada) {
+          delete args.pada;
+          tinantas = vyakarana.deriveTinantas(args);
+        }
 
         if (tinantas && tinantas.length > 0) {
-          const res = tinantas[0];
-          return formatPrakriyaOutput(res, cleanInput, 'tinanta', {
-            type: 'slovesný tvar (tiṅanta)',
-            pratipadikaOrDhatu: `kořen √${cleanInput}`,
-            padaOrGana: options.gana || 'Bhvadi gaṇa (1. třída)',
-            caseOrLakara: 'Laṭ (prézens indikativ)',
-            numberOrVacana: 'Eka (jednotné číslo)',
-            genderOrPrayoga: 'Kartari (činný rod / aktívum)'
+          return formatPrakriyaOutput(tinantas[0], dhatu, 'tinanta', {
+            type: labels.tinanta,
+            pratipadikaOrDhatu: `${labels.root} √${dhatu}`,
+            padaOrGana: labels.gana(gana, classNumber),
+            caseOrLakara: labels.lat,
+            numberOrVacana: `${vacana} (${labels.vacana[vacana]}), ${purusha} (${labels.purusha[purusha]})`,
+            genderOrPrayoga: labels.prayoga(pada)
           });
         }
       }
 
       // Default: Subanta (nominal derivation)
-      const g = (options?.gender || options?.linga || '').toLowerCase();
-      const linga = (g === 'feminine' || g === 'stri') ? 'Stri' : ((g === 'neuter' || g === 'napumsaka') ? 'Napumsaka' : 'Pum');
+      const g = String(options?.gender || options?.linga || '').toLowerCase();
+      const linga = (g === 'feminine' || g === 'stri' || g === 'f')
+        ? 'Stri'
+        : ((g === 'neuter' || g === 'napumsaka' || g === 'n') ? 'Napumsaka' : 'Pum');
 
-      const c = (options?.case || options?.vibhakti || '').toLowerCase();
-      const vibhaktiMap: Record<string, string> = {
-        nominative: 'Prathama', '1': 'Prathama', prathama: 'Prathama',
-        accusative: 'Dvitiya', '2': 'Dvitiya', dvitiya: 'Dvitiya',
-        instrumental: 'Trtiya', '3': 'Trtiya', trtiya: 'Trtiya',
-        dative: 'Caturthi', '4': 'Caturthi', caturthi: 'Caturthi',
-        ablative: 'Panchami', '5': 'Panchami', panchami: 'Panchami',
-        genitive: 'Sasthi', '6': 'Sasthi', sasthi: 'Sasthi',
-        locative: 'Saptami', '7': 'Saptami', saptami: 'Saptami',
-        vocative: 'Sambodhana', '8': 'Sambodhana', sambodhana: 'Sambodhana'
-      };
-      const vibhakti = (c && vibhaktiMap[c]) ? vibhaktiMap[c] : 'Sasthi';
-
-      const n = (options?.number || options?.vacana || '').toLowerCase();
-      const vacana = (n === 'plural' || n === 'bahu') ? 'Bahu' : ((n === 'dual' || n === 'dvi') ? 'Dvi' : 'Eka');
+      const c = String(options?.case || options?.vibhakti || '').toLowerCase();
+      const vibhakti = VIBHAKTI_MAP[c] || 'Prathama';
 
       const stemSlp1 = options?.stem ? transliterate(options.stem, Scheme.Iast, Scheme.Slp1) : slp1;
       const subantas = vyakarana.deriveSubantas({
@@ -526,13 +642,12 @@ export function derivePrakriyaTree(
       });
 
       if (subantas && subantas.length > 0) {
-        const res = subantas[0];
-        return formatPrakriyaOutput(res, cleanInput, 'subanta', {
-          type: 'jmenný tvar (subanta)',
-          pratipadikaOrDhatu: `kmen ${cleanInput}`,
-          caseOrLakara: `${vibhakti} (pád)`,
-          numberOrVacana: `${vacana} (číslo)`,
-          genderOrPrayoga: `${linga} (rod)`
+        return formatPrakriyaOutput(subantas[0], options?.stem || cleanInput, 'subanta', {
+          type: labels.subanta,
+          pratipadikaOrDhatu: `${labels.stem} ${options?.stem || cleanInput}`,
+          caseOrLakara: `${vibhakti} – ${labels.vibhakti[vibhakti]}`,
+          numberOrVacana: `${vacana} – ${labels.vacana[vacana]}`,
+          genderOrPrayoga: `${linga} – ${labels.linga[linga]}`
         });
       }
 
@@ -540,7 +655,7 @@ export function derivePrakriyaTree(
     } finally {
       vyakarana.free();
     }
-  } catch (e) {
+  } catch {
     return null;
   }
 }
@@ -549,7 +664,7 @@ function formatPrakriyaOutput(
   prakriya: any,
   stemOrRoot: string,
   category: 'subanta' | 'tinanta',
-  notes: any
+  notes: PrakriyaDerivationResult['linguisticNotes']
 ): PrakriyaDerivationResult {
   const { Scheme, transliterate } = vidyutModule;
   const targetText = prakriya.text;
@@ -588,7 +703,7 @@ function formatPrakriyaOutput(
  * Unified Sanskrit lemmatizer and morphological analysis.
  * Combines Vidyut WASM capabilities with local offline rule base.
  */
-export async function analyzeSanskritWordFull(query: string): Promise<VidyutAnalysisResult> {
+export async function analyzeSanskritWordFull(query: string, lang: SupportedLanguage = 'cs'): Promise<VidyutAnalysisResult> {
   const trimmed = query.trim();
   if (!trimmed) {
     return {
@@ -599,8 +714,8 @@ export async function analyzeSanskritWordFull(query: string): Promise<VidyutAnal
   }
 
   // 1. Convert query to standard IAST
-  const isDeva = /[\u0900-\u097F]/.test(trimmed);
-  const iast = isDeva ? devanagariToIast(trimmed).toLowerCase() : trimmed.toLowerCase();
+  const isDeva = DEVANAGARI_LETTER.test(trimmed);
+  const iast = (isDeva ? devanagariToIast(trimmed) : trimmed).normalize('NFC').toLowerCase();
 
   // 2. Local rule-based morphological analysis
   const baseAnalyses = analyzeSanskritWord(iast);
@@ -618,33 +733,37 @@ export async function analyzeSanskritWordFull(query: string): Promise<VidyutAnal
 
     if (vidyutModule) {
       source = 'hybrid';
-      // Compute Sandhi splits
-      const splits = splitSandhiWasm(iast);
+      const word = iast.replace(/[।॥|,;.!?]/g, '').trim();
+
+      const splits = splitSandhiWasm(word);
       if (splits.length > 0) {
         sandhiSplits = splits.slice(0, 8); // Top 8 valid splits
       }
 
-      // Compute Chandas akṣaras
-      const meter = classifyMeterWasm(iast);
+      const meter = classifyMeterWasm(word, lang);
       if (meter && meter.aksharas.length > 0) {
-        meterInfo = meter;
+        meterInfo = { name: meter.name, aksharas: meter.aksharas };
       }
 
-      // Try deriving Paninian derivation tree for first analysis
       const first = baseAnalyses[0];
-      const derivation = derivePrakriyaTree(first?.lemma || iast, {
+      // Indeclinables (avyaya) have no subanta/tiṅanta derivation
+      const derivation = first?.pos === 'indeclinable' ? null : derivePrakriyaTree(first?.stem || first?.lemma || word, {
         pos: first?.pos === 'verb' ? 'verb' : 'noun',
         gender: first?.gender,
         case: first?.case,
         number: first?.number,
-        root: first?.root
+        root: first?.dhatu || first?.root,
+        gana: first?.gana,
+        person: first?.person,
+        voice: first?.voice,
+        lang
       });
 
       if (derivation) {
         prakriyaTree = derivation;
       }
     }
-  } catch (err) {
+  } catch {
     source = 'morph_rules';
   }
 

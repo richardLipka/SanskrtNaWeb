@@ -7,7 +7,12 @@ export interface MorphAnalysis {
   gender?: 'masculine' | 'feminine' | 'neuter';
   case?: 'nominative' | 'accusative' | 'instrumental' | 'dative' | 'ablative' | 'genitive' | 'locative' | 'vocative';
   number?: 'singular' | 'dual' | 'plural';
+  /** Display form of the root, e.g. "√bhū" */
   root?: string;
+  /** Bare dhātu for derivation engines, e.g. "bhū" */
+  dhatu?: string;
+  /** Verbal class (gaṇa) number 1–10 */
+  gana?: number;
   person?: '1st' | '2nd' | '3rd';
   tense?: string;
   voice?: 'active' | 'middle' | 'passive';
@@ -34,28 +39,85 @@ const INDECLINABLES: Record<string, { desc_cs: string; desc_en: string }> = {
   'yadā': { desc_cs: 'když, kdykoliv', desc_en: 'when' },
   'tadā': { desc_cs: 'tehdy', desc_en: 'then' },
   'sadā': { desc_cs: 'vždy, neustále', desc_en: 'always' },
-  'vina': { desc_cs: 'bez', desc_en: 'without' },
-  'saha': { desc_cs: 'spolu s (s instrumentálem)', desc_en: 'with, together' }
+  'vinā': { desc_cs: 'bez (s instrumentálem/akuzativem)', desc_en: 'without' },
+  'saha': { desc_cs: 'spolu s (s instrumentálem)', desc_en: 'with, together' },
+  'hi': { desc_cs: 'neboť, vždyť', desc_en: 'for, indeed' },
+  'khalu': { desc_cs: 'věru, zajisté', desc_en: 'indeed, surely' },
+  'nu': { desc_cs: 'tedy, nyní (tázací zesilovač)', desc_en: 'now, then (interrogative particle)' },
+  'evam': { desc_cs: 'tak, takto', desc_en: 'thus, in this way' },
+  'iha': { desc_cs: 'zde, na tomto světě', desc_en: 'here, in this world' },
+  'atra': { desc_cs: 'zde, v tom', desc_en: 'here, in this' },
+  'tatra': { desc_cs: 'tam, v tom', desc_en: 'there, therein' },
+  'yatra': { desc_cs: 'kde, kam', desc_en: 'where' },
+  'kva': { desc_cs: 'kde?', desc_en: 'where?' },
+  'adya': { desc_cs: 'dnes, nyní', desc_en: 'today, now' },
+  'yadi': { desc_cs: 'jestliže, pokud', desc_en: 'if' },
+  'ced': { desc_cs: 'jestliže, pokud', desc_en: 'if' },
+  'tathāpi': { desc_cs: 'přesto, nicméně', desc_en: 'nevertheless' },
+  'kadācana': { desc_cs: 'kdykoli (se záporkou: nikdy)', desc_en: 'ever (with negation: never)' },
+  'kadācit': { desc_cs: 'někdy, kdysi', desc_en: 'sometimes, once' },
+  'sarvadā': { desc_cs: 'vždy, za všech okolností', desc_en: 'always' },
+  'ataḥ': { desc_cs: 'proto, odtud', desc_en: 'therefore, hence' }
 };
 
-// Common verb patterns (Present active 3rd person)
-const VERB_STEMS: Record<string, { root: string; class: number }> = {
-  'bhav': { root: '√bhū (bhav)', class: 1 },
-  'kar': { root: '√kṛ', class: 8 },
-  'kurv': { root: '√kṛ', class: 8 },
-  'gacch': { root: '√gam (gacch)', class: 1 },
-  'paśy': { root: '√dṛś (paśy)', class: 1 },
-  'tiṣṭh': { root: '√sthā (tiṣṭh)', class: 1 },
-  'vad': { root: '√vad', class: 1 },
-  'pat': { root: '√pat', class: 1 },
-  'dhāv': { root: '√dhāv', class: 1 },
-  'smar': { root: '√smṛ', class: 1 },
-  'nay': { root: '√nī', class: 1 },
-  'jay': { root: '√ji', class: 1 },
-  'vas': { root: '√vas', class: 1 },
-  'dhar': { root: '√dhṛ', class: 1 },
-  'jñā': { root: '√jñā', class: 9 }
+type VerbForm = { person: '1st' | '2nd' | '3rd'; number: 'singular' | 'dual' | 'plural'; voice: 'active' | 'middle' };
+
+const THEMATIC_FORMS: Record<string, VerbForm> = {
+  ati: { person: '3rd', number: 'singular', voice: 'active' },
+  anti: { person: '3rd', number: 'plural', voice: 'active' },
+  ate: { person: '3rd', number: 'singular', voice: 'middle' },
+  ante: { person: '3rd', number: 'plural', voice: 'middle' },
+  asi: { person: '2nd', number: 'singular', voice: 'active' },
+  āmi: { person: '1st', number: 'singular', voice: 'active' },
+  āmaḥ: { person: '1st', number: 'plural', voice: 'active' }
 };
+
+// Common present stems with their dhātu and gaṇa; `forms` overrides the thematic endings
+const VERB_STEMS: Record<string, { dhatu: string; gana: number; forms?: Record<string, VerbForm> }> = {
+  'bhav': { dhatu: 'bhū', gana: 1 },
+  'gacch': { dhatu: 'gam', gana: 1 },
+  'paśy': { dhatu: 'dṛś', gana: 1 },
+  'tiṣṭh': { dhatu: 'sthā', gana: 1 },
+  'vad': { dhatu: 'vad', gana: 1 },
+  'pat': { dhatu: 'pat', gana: 1 },
+  'dhāv': { dhatu: 'dhāv', gana: 1 },
+  'smar': { dhatu: 'smṛ', gana: 1 },
+  'nay': { dhatu: 'nī', gana: 1 },
+  'jay': { dhatu: 'ji', gana: 1 },
+  'vas': { dhatu: 'vas', gana: 1 },
+  'dhar': { dhatu: 'dhṛ', gana: 1 },
+  'kar': {
+    dhatu: 'kṛ',
+    gana: 8,
+    forms: {
+      oti: { person: '3rd', number: 'singular', voice: 'active' },
+      oṣi: { person: '2nd', number: 'singular', voice: 'active' },
+      omi: { person: '1st', number: 'singular', voice: 'active' }
+    }
+  },
+  'kur': {
+    dhatu: 'kṛ',
+    gana: 8,
+    forms: {
+      vanti: { person: '3rd', number: 'plural', voice: 'active' },
+      ute: { person: '3rd', number: 'singular', voice: 'middle' },
+      vate: { person: '3rd', number: 'plural', voice: 'middle' }
+    }
+  },
+  'jān': {
+    dhatu: 'jñā',
+    gana: 9,
+    forms: {
+      āti: { person: '3rd', number: 'singular', voice: 'active' },
+      anti: { person: '3rd', number: 'plural', voice: 'active' },
+      āsi: { person: '2nd', number: 'singular', voice: 'active' },
+      āmi: { person: '1st', number: 'singular', voice: 'active' }
+    }
+  }
+};
+
+const PERSON_LABEL = { '1st': { cs: '1.', en: '1st' }, '2nd': { cs: '2.', en: '2nd' }, '3rd': { cs: '3.', en: '3rd' } };
+const NUMBER_LABEL = { singular: 'sg.', dual: 'du.', plural: 'pl.' };
 
 /**
  * Client-Side Sanskrit Lemmatizer & Morphological Analyzer.
@@ -64,10 +126,15 @@ const VERB_STEMS: Record<string, { root: string; class: number }> = {
 export function analyzeSanskritWord(inputWord: string): MorphAnalysis[] {
   if (!inputWord) return [];
 
-  // Convert to IAST if input is Devanagari
-  const iast = /[\u0900-\u097F]/.test(inputWord)
-    ? devanagariToIast(inputWord).trim().toLowerCase()
-    : inputWord.trim().toLowerCase();
+  // Convert to IAST if input is Devanagari; strip surrounding punctuation and verse numbers
+  const raw = /[\u0900-\u097F]/.test(inputWord) ? devanagariToIast(inputWord) : inputWord;
+  const iast = raw
+    .normalize('NFC')
+    .trim()
+    .toLowerCase()
+    .replace(/^[\s"'„“”‚‘’()[\]|।॥.,;:!?0-9०-९-]+|[\s"„“”‚‘’()[\]|।॥.,;:!?0-9०-९-]+$/g, '');
+
+  if (!iast) return [];
 
   const results: MorphAnalysis[] = [];
 
@@ -83,57 +150,30 @@ export function analyzeSanskritWord(inputWord: string): MorphAnalysis[] {
     return results;
   }
 
-  // 2. Check Verbs (Present active/middle)
+  // 2. Check Verbs (present indicative)
   for (const [stem, info] of Object.entries(VERB_STEMS)) {
-    if (iast.startsWith(stem)) {
-      const suffix = iast.slice(stem.length);
+    if (!iast.startsWith(stem)) continue;
+    const suffix = iast.slice(stem.length);
+    const form = (info.forms || THEMATIC_FORMS)[suffix];
+    if (!form) continue;
 
-      // 3rd singular active (-ti)
-      if (suffix === 'ati' || suffix === 'ti') {
-        results.push({
-          lemma: info.root,
-          pos: 'verb',
-          root: info.root,
-          person: '3rd',
-          number: 'singular',
-          tense: 'present',
-          voice: 'active',
-          label_cs: `sloveso 3. os. sg. prézens akt. (${info.root})`,
-          label_en: `verb 3rd sg. present active (${info.root})`,
-          confidence: 0.95
-        });
-      }
-      // 3rd plural active (-anti)
-      if (suffix === 'anti') {
-        results.push({
-          lemma: info.root,
-          pos: 'verb',
-          root: info.root,
-          person: '3rd',
-          number: 'plural',
-          tense: 'present',
-          voice: 'active',
-          label_cs: `sloveso 3. os. pl. prézens akt. (${info.root})`,
-          label_en: `verb 3rd pl. present active (${info.root})`,
-          confidence: 0.95
-        });
-      }
-      // 3rd singular middle (-te)
-      if (suffix === 'ate' || suffix === 'te') {
-        results.push({
-          lemma: info.root,
-          pos: 'verb',
-          root: info.root,
-          person: '3rd',
-          number: 'singular',
-          tense: 'present',
-          voice: 'middle',
-          label_cs: `sloveso 3. os. sg. prézens méd. (${info.root})`,
-          label_en: `verb 3rd sg. present middle (${info.root})`,
-          confidence: 0.9
-        });
-      }
-    }
+    const root = `√${info.dhatu}`;
+    const voiceCs = form.voice === 'middle' ? 'méd.' : 'akt.';
+    const voiceEn = form.voice === 'middle' ? 'middle' : 'active';
+    results.push({
+      lemma: root,
+      pos: 'verb',
+      root,
+      dhatu: info.dhatu,
+      gana: info.gana,
+      person: form.person,
+      number: form.number,
+      tense: 'present',
+      voice: form.voice,
+      label_cs: `sloveso ${PERSON_LABEL[form.person].cs} os. ${NUMBER_LABEL[form.number]} prézens ${voiceCs} (${root}, ${info.gana}. třída, kmen ${stem}-)`,
+      label_en: `verb ${PERSON_LABEL[form.person].en} ${NUMBER_LABEL[form.number]} present ${voiceEn} (${root}, class ${info.gana}, stem ${stem}-)`,
+      confidence: form.voice === 'middle' ? 0.9 : 0.95
+    });
   }
 
   // 3. Check Masculine/Neuter -a stem nouns (e.g. yoga, citta, dharma, karma)

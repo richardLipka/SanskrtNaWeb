@@ -94,7 +94,8 @@ export const DICTIONARY_PROVIDERS: Record<DictionaryProviderId, DictionaryProvid
     description: 'Moderní otevřený indologický projekt integrující MW, Apte, Shabda-Sagara i Vachaspatyam.',
     getUrl: (word) => {
       const clean = sanitizeSearchLemma(word);
-      return `https://ambuda.org/tools/dictionaries?q=${encodeURIComponent(clean)}`;
+      // The ?q= form redirects to the index page and drops the query; the path form searches
+      return `https://ambuda.org/tools/dictionaries/mw/${encodeURIComponent(clean)}`;
     }
   },
   learnsanskrit: {

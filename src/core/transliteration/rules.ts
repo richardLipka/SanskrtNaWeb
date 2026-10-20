@@ -17,14 +17,14 @@ export const DEFAULT_CZECH_RULES: CzechPhoneticRules = {
   ySemivowel: 'j',          // y -> j (e.g. yoga -> jóga)
   vSemivowel: 'v',          // v -> v
   longVowels: 'czech_accents', // ā, ī, ū -> á, í, ú
-  anusvaraMode: 'simple_m', // ṃ -> m
-  visargaMode: 'h',         // ḥ -> h
+  anusvaraMode: 'simple_m', // ṃ -> m ('simple_n': ṃ -> n, 'phonetic': homorganic nasal, saṃgha -> sangha)
+  visargaMode: 'h',         // ḥ -> h ('none': dropped, 'ah': echo vowel as in recitation, namaḥ -> namaha)
   customWordOverrides: {
     // Curated standard Czech yoga dictionary entries
     'yoga': 'jóga',
     'yogaḥ': 'jógah',
-    'yoge': 'józe',
-    'yogin': 'jógín',
+    'yoge': 'jóge',
+    'yogin': 'jógin',
     'yogī': 'jógí',
     'āsana': 'ásana',
     'prāṇāyāma': 'pránájáma',
