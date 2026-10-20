@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Sanskrt na Web — WordPress Plugin Preview</title>
+	<link rel="preconnect" href="https://fonts.googleapis.com">
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Tiro+Devanagari+Sanskrit:ital@0;1&display=swap" rel="stylesheet">
+	<link rel="stylesheet" href="assets/css/sanskrt-base.css">
+	<link rel="stylesheet" href="assets/css/sanskrt-skins.css">
+	<style>
+		/* Mock WordPress Theme container */
+		body {
+			font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+			background-color: #f7f9fa;
+			color: #24292f;
+			margin: 0;
+			padding: 2rem 1rem;
+			line-height: 1.6;
+		}
+		.theme-mock-page {
+			max-width: 860px;
+			margin: 0 auto;
+			background: #ffffff;
+			padding: 2.5rem 3rem;
+			border-radius: 12px;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.06);
+		}
+		.theme-mock-header {
+			border-bottom: 2px solid #eaeef2;
+			padding-bottom: 1.5rem;
+			margin-bottom: 2rem;
+		}
+		.theme-mock-header h1 {
+			margin: 0 0 0.5rem 0;
+			font-size: 2rem;
+			color: #0d1117;
+		}
+		.theme-mock-meta {
+			color: #57606a;
+			font-size: 0.9rem;
+		}
+		.demo-section-label {
+			font-size: 0.85rem;
+			font-weight: 700;
+			text-transform: uppercase;
+			letter-spacing: 0.06em;
+			color: #0969da;
+			margin-top: 2.5rem;
+			margin-bottom: 0.5rem;
+		}
+	</style>
+</head>
+<body>
+
+<div class="theme-mock-page">
+	<header class="theme-mock-header">
+		<h1>Ukázka integrace: Sanskrt na Web WP Plugin</h1>
+		<div class="theme-mock-meta">Testování vykreslení ve fiktivní WP šabloně • Režim Reader (pouze pro čtení)</div>
+	</header>
+
+	<div class="demo-section-label">1. Výchozí zobrazení (Skin: Native — 100% přejímá styl a font šablony)</div>
+	<!-- Verse 1: Patañjali Yogasūtra 1.1 -->
+	<div class="sanskrt-verse-container skin-native" id="sanskrt-pys_1_1" data-verse-id="pys_1_1" data-cross-highlight="true">
+		<header class="sanskrt-verse-header">
+			<div class="sanskrt-verse-identity">
+				<h3 class="sanskrt-verse-title">
+					<span class="sanskrt-book-name">Yogasūtra</span>
+					<span class="sanskrt-verse-num">1.1</span>
+				</h3>
+				<span class="sanskrt-chapter-name">1. Samādhipāda</span>
+			</div>
+			<div class="sanskrt-verse-meta">
+				<span class="sanskrt-badge sanskrt-badge-meter" title="Metrická forma verše">
+					<svg class="sanskrt-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M4 6h16M4 18h8"/></svg>
+					Sūtra (Próza)
+				</span>
+				<a href="https://gretil.sub.uni-goettingen.de/" class="sanskrt-badge sanskrt-badge-source" target="_blank">Patañjali: Yogasūtra 1.1</a>
+			</div>
+		</header>
+
+		<div class="sanskrt-controls-bar" aria-label="Přepínače viditelnosti vrstev">
+			<span class="sanskrt-controls-label">Vrstvy:</span>
+			<div class="sanskrt-pill-group">
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="devanagari" aria-pressed="true">Dévanágarí</button>
+				<button type="button" class="sanskrt-pill-toggle" data-target-layer="padaccheda" aria-pressed="false">Padaccheda</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="iast" aria-pressed="true">IAST</button>
+				<button type="button" class="sanskrt-pill-toggle" data-target-layer="cs-phonetic" aria-pressed="false">Český přepis</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="translation" aria-pressed="true">Překlad</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="commentaries" aria-pressed="true">Komentáře</button>
+			</div>
+		</div>
+
+		<div class="sanskrt-layers-body">
+			<!-- Devanagari Layer -->
+			<div class="sanskrt-layer sanskrt-layer-devanagari" data-layer-name="devanagari" lang="sa">
+				<div class="sanskrt-script-text sanskrt-font-devanagari">
+					<span class="sanskrt-token" data-token-id="t_1_1_1" tabindex="0" role="button">अथ</span>
+					<span class="sanskrt-token" data-token-id="t_1_1_2" tabindex="0" role="button">योग</span><span class="sanskrt-token" data-token-id="t_1_1_3" tabindex="0" role="button">अनुशासनम्</span>
+					<span class="sanskrt-verse-danda">॥ १.१ ॥</span>
+				</div>
+			</div>
+
+			<!-- Padaccheda Layer (hidden by default) -->
+			<div class="sanskrt-layer sanskrt-layer-padaccheda" data-layer-name="padaccheda" style="display: none;">
+				<div class="sanskrt-layer-header"><span class="sanskrt-layer-label">Padaccheda (slovní rozdělení):</span></div>
+				<div class="sanskrt-pada-line sanskrt-font-devanagari" lang="sa">अथ योग-अनुशासनम् ॥ १.१ ॥</div>
+				<div class="sanskrt-pada-line sanskrt-font-iast" lang="sa-Latn">atha yoga-anuśāsanam || 1.1 ||</div>
+			</div>
+
+			<!-- IAST Layer -->
+			<div class="sanskrt-layer sanskrt-layer-iast" data-layer-name="iast" lang="sa-Latn">
+				<div class="sanskrt-script-text sanskrt-font-iast">
+					<span class="sanskrt-token" data-token-id="t_1_1_1" tabindex="0" role="button">atha</span>
+					<span class="sanskrt-token" data-token-id="t_1_1_2" tabindex="0" role="button">yoga</span>-<span class="sanskrt-token" data-token-id="t_1_1_3" tabindex="0" role="button">anuśāsanam</span>
+					<span class="sanskrt-verse-danda">|| 1.1 ||</span>
+				</div>
+			</div>
+
+			<!-- Czech Phonetic Layer (hidden by default) -->
+			<div class="sanskrt-layer sanskrt-layer-cs-phonetic" data-layer-name="cs-phonetic" style="display: none;" lang="cs">
+				<div class="sanskrt-layer-header"><span class="sanskrt-layer-label">Český fonetický přepis:</span></div>
+				<div class="sanskrt-script-text sanskrt-font-phonetic">atha jógánušásanam || 1.1 ||</div>
+			</div>
+
+			<!-- Translations Layer -->
+			<div class="sanskrt-layer sanskrt-layer-translation-group" data-layer-name="translation">
+				<div class="sanskrt-translation-item is-fluent" data-layer-name="translation">
+					<div class="sanskrt-translation-meta">
+						<span class="sanskrt-trans-label">Český překlad</span>
+						<span class="sanskrt-lang-tag">CS</span>
+					</div>
+					<div class="sanskrt-translation-text">
+						<span class="sanskrt-aligned-word" data-token-id="t_1_1_1">Nyní</span> následuje <span class="sanskrt-aligned-word" data-token-id="t_1_1_3">výklad</span> <span class="sanskrt-aligned-word" data-token-id="t_1_1_2">jógy</span>.
+					</div>
+				</div>
+			</div>
+
+			<!-- Commentaries Layer -->
+			<div class="sanskrt-layer sanskrt-layer-commentaries" data-layer-name="commentaries">
+				<div class="sanskrt-layer-header">
+					<h4 class="sanskrt-layer-heading">
+						<svg class="sanskrt-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path></svg>
+						Tradiční komentáře a výklad (Bhāṣya)
+					</h4>
+				</div>
+				<div class="sanskrt-commentaries-list">
+					<article class="sanskrt-commentary-card is-original-sanskrit">
+						<header class="sanskrt-commentary-header">
+							<span class="sanskrt-comm-author">Vyāsa</span>
+							<span class="sanskrt-comm-tradition">Sāṅkhya-Yoga</span>
+							<span class="sanskrt-comm-title">— Yogabhāṣya</span>
+						</header>
+						<div class="sanskrt-commentary-body sanskrt-font-devanagari">
+							योगः समाधिः। स च सार्वभौमश्चित्तस्य धर्मः।
+						</div>
+						<footer class="sanskrt-commentary-footer">
+							<cite>Yogabhāṣya 1.1</cite>
+						</footer>
+					</article>
+					<article class="sanskrt-commentary-card">
+						<header class="sanskrt-commentary-header">
+							<span class="sanskrt-comm-author">Poznámka k překladu</span>
+							<span class="sanskrt-comm-tradition">Klasická jóga</span>
+						</header>
+						<div class="sanskrt-commentary-body">
+							Slovo „atha“ indikuje, že žák již prošel přípravnou očistnou fází a nyní je způsobilý k hlubšímu vhledu do jógové praxe.
+						</div>
+					</article>
+				</div>
+			</div>
+		</div>
+
+		<!-- Token data JSON payload for modal -->
+		<script type="application/json" class="sanskrt-tokens-data">
+		[
+			{
+				"id": "t_1_1_1",
+				"text": { "devanagari": "अथ", "iast": "atha" },
+				"lemma": "atha",
+				"grammar": { "label_cs": "neproměnné slůvko (zahájení díla)" },
+				"meaning_cs": "nyní, tehdy (iniciační slůvko označující začátek posvátného textu)",
+				"meaning_en": "now, auspicious beginning"
+			},
+			{
+				"id": "t_1_1_2",
+				"text": { "devanagari": "योग", "iast": "yoga" },
+				"lemma": "yoga",
+				"grammar": { "label_cs": "podst. jm., člen složeniny" },
+				"meaning_cs": "jóga, sjednocení, ztišení mysli",
+				"meaning_en": "yoga, spiritual union, integration"
+			},
+			{
+				"id": "t_1_1_3",
+				"text": { "devanagari": "अनुशासनम्", "iast": "anuśāsanam" },
+				"lemma": "anuśāsana",
+				"grammar": { "label_cs": "stř. rod, 1. pád sg." },
+				"meaning_cs": "instrukce, předání tradičního učení, ukáznění",
+				"meaning_en": "authoritative instruction, exposition"
+			}
+		]
+		</script>
+	</div>
+
+	<div class="demo-section-label">2. Volitelný skin: Ášram (Šafránový lem &amp; duchovní atmosféra)</div>
+	<!-- Verse 2: Bhagavadgītā 2.47 in Ashram skin -->
+	<div class="sanskrt-verse-container skin-ashram" id="sanskrt-bg_2_47" data-verse-id="bg_2_47" data-cross-highlight="true">
+		<header class="sanskrt-verse-header">
+			<div class="sanskrt-verse-identity">
+				<h3 class="sanskrt-verse-title">
+					<span class="sanskrt-book-name">Bhagavadgītā</span>
+					<span class="sanskrt-verse-num">2.47</span>
+				</h3>
+				<span class="sanskrt-chapter-name">2. Sāṅkhyayoga</span>
+			</div>
+			<div class="sanskrt-verse-meta">
+				<span class="sanskrt-badge sanskrt-badge-meter" title="Metrická forma verše">
+					<svg class="sanskrt-icon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M4 12h16M4 6h16M4 18h8"/></svg>
+					Anuṣṭubh (Šlóka)
+				</span>
+				<a href="https://gretil.sub.uni-goettingen.de/" class="sanskrt-badge sanskrt-badge-source" target="_blank">Mahābhārata 6.24.47</a>
+			</div>
+		</header>
+
+		<div class="sanskrt-controls-bar" aria-label="Přepínače viditelnosti vrstev">
+			<span class="sanskrt-controls-label">Vrstvy:</span>
+			<div class="sanskrt-pill-group">
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="devanagari" aria-pressed="true">Dévanágarí</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="iast" aria-pressed="true">IAST</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="translation" aria-pressed="true">Překlad</button>
+				<button type="button" class="sanskrt-pill-toggle is-active" data-target-layer="commentaries" aria-pressed="true">Komentáře</button>
+			</div>
+		</div>
+
+		<div class="sanskrt-layers-body">
+			<div class="sanskrt-layer sanskrt-layer-devanagari" data-layer-name="devanagari" lang="sa">
+				<div class="sanskrt-script-text sanskrt-font-devanagari">
+					<span class="sanskrt-token" data-token-id="t_2_47_1" tabindex="0" role="button">कर्मणि</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_2" tabindex="0" role="button">एव</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_3" tabindex="0" role="button">अधिकारः</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_4" tabindex="0" role="button">ते</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_5" tabindex="0" role="button">मा</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_6" tabindex="0" role="button">फलेषु</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_7" tabindex="0" role="button">कदाचन</span>।<br>
+					<span class="sanskrt-token" data-token-id="t_2_47_8" tabindex="0" role="button">मा</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_9" tabindex="0" role="button">कर्मफलहेतुः</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_10" tabindex="0" role="button">भूः</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_11" tabindex="0" role="button">मा</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_12" tabindex="0" role="button">ते</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_13" tabindex="0" role="button">सङ्गः</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_14" tabindex="0" role="button">अस्तु</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_15" tabindex="0" role="button">अकर्मणि</span>
+					<span class="sanskrt-verse-danda">॥ २.४७ ॥</span>
+				</div>
+			</div>
+
+			<div class="sanskrt-layer sanskrt-layer-iast" data-layer-name="iast" lang="sa-Latn">
+				<div class="sanskrt-script-text sanskrt-font-iast">
+					<span class="sanskrt-token" data-token-id="t_2_47_1" tabindex="0" role="button">karmaṇi</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_2" tabindex="0" role="button">eva</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_3" tabindex="0" role="button">adhikāraḥ</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_4" tabindex="0" role="button">te</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_5" tabindex="0" role="button">mā</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_6" tabindex="0" role="button">phaleṣu</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_7" tabindex="0" role="button">kadācana</span> |<br>
+					<span class="sanskrt-token" data-token-id="t_2_47_8" tabindex="0" role="button">mā</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_9" tabindex="0" role="button">karmaphalahetuḥ</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_10" tabindex="0" role="button">bhūḥ</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_11" tabindex="0" role="button">mā</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_12" tabindex="0" role="button">te</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_13" tabindex="0" role="button">saṅgaḥ</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_14" tabindex="0" role="button">astu</span>
+					<span class="sanskrt-token" data-token-id="t_2_47_15" tabindex="0" role="button">akarmaṇi</span>
+					<span class="sanskrt-verse-danda">|| 2.47 ||</span>
+				</div>
+			</div>
+
+			<div class="sanskrt-layer sanskrt-layer-translation-group" data-layer-name="translation">
+				<div class="sanskrt-translation-item is-fluent">
+					<div class="sanskrt-translation-meta">
+						<span class="sanskrt-trans-label">Český překlad (Filipský &amp; Vacek)</span>
+						<span class="sanskrt-lang-tag">CS</span>
+					</div>
+					<div class="sanskrt-translation-text">
+						Jenom na <span class="sanskrt-aligned-word" data-token-id="t_2_47_1">konání</span> <span class="sanskrt-aligned-word" data-token-id="t_2_47_3">právo</span> <span class="sanskrt-aligned-word" data-token-id="t_2_47_4">máš</span>, nikdy na <span class="sanskrt-aligned-word" data-token-id="t_2_47_6">plody</span>! Kéž <span class="sanskrt-aligned-word" data-token-id="t_2_47_9">plod</span> tvých <span class="sanskrt-aligned-word" data-token-id="t_2_47_9">činů</span> není ti pohnutkou a kéž nelpíš na <span class="sanskrt-aligned-word" data-token-id="t_2_47_15">nečinnosti</span>.
+					</div>
+				</div>
+			</div>
+
+			<div class="sanskrt-layer sanskrt-layer-commentaries" data-layer-name="commentaries">
+				<div class="sanskrt-commentaries-list">
+					<article class="sanskrt-commentary-card is-original-sanskrit">
+						<header class="sanskrt-commentary-header">
+							<span class="sanskrt-comm-author">Śaṅkarācārya</span>
+							<span class="sanskrt-comm-tradition">Advaita Vedānta</span>
+							<span class="sanskrt-comm-title">— Śāṅkarabhāṣya</span>
+						</header>
+						<div class="sanskrt-commentary-body sanskrt-font-devanagari">
+							कर्मण्येव अधिकारः न ज्ञाननिष्ठायां ते। फलतृष्णा मा भूत्।
+						</div>
+					</article>
+				</div>
+			</div>
+		</div>
+
+		<script type="application/json" class="sanskrt-tokens-data">
+		[
+			{
+				"id": "t_2_47_1",
+				"text": { "devanagari": "कर्मणि", "iast": "karmaṇi" },
+				"lemma": "karman",
+				"grammar": { "label_cs": "stř. rod, 7. pád (lokál) sg." },
+				"meaning_cs": "v činu, v konání",
+				"meaning_en": "in action, in work"
+			},
+			{
+				"id": "t_2_47_3",
+				"text": { "devanagari": "अधिकारः", "iast": "adhikāraḥ" },
+				"lemma": "adhikāra",
+				"grammar": { "label_cs": "muž. rod, 1. pád sg." },
+				"meaning_cs": "právo, způsobilost, pravomoc",
+				"meaning_en": "right, privilege, eligibility"
+			},
+			{
+				"id": "t_2_47_6",
+				"text": { "devanagari": "फलेषु", "iast": "phaleṣu" },
+				"lemma": "phala",
+				"grammar": { "label_cs": "stř. rod, 7. pád (lokál) pl." },
+				"meaning_cs": "v plodech, ve výsledcích činů",
+				"meaning_en": "in fruits, in results"
+			},
+			{
+				"id": "t_2_47_15",
+				"text": { "devanagari": "अकर्मणि", "iast": "akarmaṇi" },
+				"lemma": "akarman",
+				"grammar": { "label_cs": "stř. rod, 7. pád sg." },
+				"meaning_cs": "v nečinnosti, v pasivitě",
+				"meaning_en": "in inaction"
+			}
+		]
+		</script>
+	</div>
+
+	<div class="demo-section-label">3. Volitelný skin: Pergamen / Svitek</div>
+	<!-- Verse 3 in Parchment skin -->
+	<div class="sanskrt-verse-container skin-parchment" id="sanskrt-pys_1_2" data-verse-id="pys_1_2" data-cross-highlight="true">
+		<header class="sanskrt-verse-header">
+			<div class="sanskrt-verse-identity">
+				<h3 class="sanskrt-verse-title">
+					<span class="sanskrt-book-name">Yogasūtra</span>
+					<span class="sanskrt-verse-num">1.2</span>
+				</h3>
+				<span class="sanskrt-chapter-name">1. Samādhipāda</span>
+			</div>
+			<div class="sanskrt-verse-meta">
+				<span class="sanskrt-badge sanskrt-badge-meter">Sūtra (Definiční)</span>
+			</div>
+		</header>
+		<div class="sanskrt-layers-body">
+			<div class="sanskrt-layer sanskrt-layer-devanagari" data-layer-name="devanagari" lang="sa">
+				<div class="sanskrt-script-text sanskrt-font-devanagari">
+					योगश्चित्तवृत्तिनिरोधः ॥ १.२ ॥
+				</div>
+			</div>
+			<div class="sanskrt-layer sanskrt-layer-iast" data-layer-name="iast" lang="sa-Latn">
+				<div class="sanskrt-script-text sanskrt-font-iast">
+					yogaś citta-vṛtti-nirodhaḥ || 1.2 ||
+				</div>
+			</div>
+			<div class="sanskrt-layer sanskrt-layer-translation-group" data-layer-name="translation">
+				<div class="sanskrt-translation-item is-fluent">
+					<div class="sanskrt-translation-text">
+						Jóga je zastavení víření mysli.
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+	<div class="demo-section-label">4. Volitelný skin: Tmavý védský (Zlato na břidlici)</div>
+	<!-- Verse 4 in Dark skin -->
+	<div class="sanskrt-verse-container skin-dark" id="sanskrt-pys_1_2_dark" data-verse-id="pys_1_2_dark" data-cross-highlight="true">
+		<header class="sanskrt-verse-header">
+			<div class="sanskrt-verse-identity">
+				<h3 class="sanskrt-verse-title">
+					<span class="sanskrt-book-name">Yogasūtra</span>
+					<span class="sanskrt-verse-num">1.2</span>
+				</h3>
+				<span class="sanskrt-chapter-name">Definice jógy</span>
+			</div>
+			<div class="sanskrt-verse-meta">
+				<span class="sanskrt-badge sanskrt-badge-meter">Definiční sútra</span>
+			</div>
+		</header>
+		<div class="sanskrt-layers-body">
+			<div class="sanskrt-layer sanskrt-layer-devanagari" data-layer-name="devanagari" lang="sa">
+				<div class="sanskrt-script-text sanskrt-font-devanagari">
+					योगश्चित्तवृत्तिनिरोधः ॥ १.२ ॥
+				</div>
+			</div>
+			<div class="sanskrt-layer sanskrt-layer-iast" data-layer-name="iast" lang="sa-Latn">
+				<div class="sanskrt-script-text sanskrt-font-iast">
+					yogaś citta-vṛtti-nirodhaḥ || 1.2 ||
+				</div>
+			</div>
+			<div class="sanskrt-layer sanskrt-layer-translation-group" data-layer-name="translation">
+				<div class="sanskrt-translation-item is-fluent">
+					<div class="sanskrt-translation-text">
+						Yoga is the restriction of the fluctuations of consciousness.
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
+
+</div>
+
+<script src="assets/js/sanskrt-frontend.js"></script>
+</body>
+</html>

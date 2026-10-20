@@ -1,0 +1,184 @@
+/**
+ * SanskrtNaWeb - Skins Stylesheet
+ * 
+ * Provides distinct aesthetic presentations while preserving accessible hierarchy.
+ * Default is 'skin-native' (in sanskrt-base.css) which inherits the active WP theme.
+ */
+
+/* ==========================================================================
+   Skin: Parchment (Pergamen / Tradiční svitek)
+   Warm cream tones, sepia inks, traditional Sanskrit manuscript feel.
+   ========================================================================== */
+
+.sanskrt-verse-container.skin-parchment {
+	background: #fdfaf2;
+	color: #3b2c1a;
+	border: 1px solid #e5d7c3;
+	box-shadow: 0 4px 18px rgba(85, 55, 20, 0.08);
+	--sanskrt-badge-bg: #f4ecdc;
+	--sanskrt-badge-border: #dac5a7;
+	--sanskrt-pill-border: #d8c4a6;
+	--sanskrt-pill-hover-bg: #efe4cf;
+	--sanskrt-highlight-bg: rgba(199, 131, 35, 0.24);
+	--sanskrt-highlight-border: #b86e10;
+	--sanskrt-highlight-active: rgba(199, 131, 35, 0.45);
+}
+
+.sanskrt-verse-container.skin-parchment .sanskrt-verse-header {
+	border-bottom-color: #eeddc5;
+}
+
+.sanskrt-verse-container.skin-parchment .sanskrt-controls-bar {
+	background: #f5edde;
+}
+
+.sanskrt-verse-container.skin-parchment .sanskrt-pill-toggle.is-active {
+	background: #7a461b;
+	color: #ffffff;
+	border-color: #7a461b;
+}
+
+.sanskrt-verse-container.skin-parchment .sanskrt-translation-item {
+	background: #f6efe1;
+	border-left-color: #7a461b;
+}
+
+.sanskrt-verse-container.skin-parchment .sanskrt-commentary-card {
+	background: #f8f3e9;
+	border-color: #e5d9c7;
+}
+
+/* ==========================================================================
+   Skin: Ashram (Ášram / Šafrán & Okr)
+   Warm saffron-bordered card, sacred Vedic aesthetic.
+   ========================================================================== */
+
+.sanskrt-verse-container.skin-ashram {
+	background: #fffcf8;
+	color: #2b221a;
+	border: 1px solid #fae8d4;
+	border-left: 5px solid #d9531e;
+	box-shadow: 0 4px 16px rgba(217, 83, 30, 0.07);
+	--sanskrt-badge-bg: #fdf0e2;
+	--sanskrt-badge-border: #f6cfab;
+	--sanskrt-pill-border: #f2c79f;
+	--sanskrt-pill-hover-bg: #fae6d2;
+	--sanskrt-highlight-bg: rgba(224, 100, 30, 0.22);
+	--sanskrt-highlight-border: #d9531e;
+	--sanskrt-highlight-active: rgba(224, 100, 30, 0.42);
+}
+
+.sanskrt-verse-container.skin-ashram .sanskrt-verse-title {
+	color: #9c3308;
+}
+
+.sanskrt-verse-container.skin-ashram .sanskrt-controls-bar {
+	background: #fdf3e7;
+}
+
+.sanskrt-verse-container.skin-ashram .sanskrt-pill-toggle.is-active {
+	background: #d9531e;
+	color: #ffffff;
+	border-color: #d9531e;
+}
+
+.sanskrt-verse-container.skin-ashram .sanskrt-translation-item {
+	background: #fef8f0;
+	border-left-color: #d9531e;
+}
+
+.sanskrt-verse-container.skin-ashram .sanskrt-commentary-card {
+	background: #fef8f0;
+	border-color: #f7e2ce;
+}
+
+/* ==========================================================================
+   Skin: Academic (Akademický / Kritické vydání)
+   Clean, minimalist serif layout, indological philological styling.
+   ========================================================================== */
+
+.sanskrt-verse-container.skin-academic {
+	background: #ffffff;
+	color: #1a1a1a;
+	border: 1px solid #d0d7de;
+	box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+	font-family: "Georgia", "Cambria", "Times New Roman", serif;
+	--sanskrt-badge-bg: #f6f8fa;
+	--sanskrt-badge-border: #d0d7de;
+	--sanskrt-pill-border: #c0c6cc;
+	--sanskrt-pill-hover-bg: #eaeef2;
+	--sanskrt-highlight-bg: rgba(9, 105, 218, 0.16);
+	--sanskrt-highlight-border: #0969da;
+	--sanskrt-highlight-active: rgba(9, 105, 218, 0.32);
+}
+
+.sanskrt-verse-container.skin-academic .sanskrt-controls-bar {
+	background: #f6f8fa;
+}
+
+.sanskrt-verse-container.skin-academic .sanskrt-pill-toggle.is-active {
+	background: #24292f;
+	color: #ffffff;
+	border-color: #24292f;
+}
+
+.sanskrt-verse-container.skin-academic .sanskrt-translation-item {
+	background: #fbfcfd;
+	border-left-color: #57606a;
+}
+
+.sanskrt-verse-container.skin-academic .sanskrt-commentary-card {
+	background: #ffffff;
+	border-color: #e1e4e8;
+}
+
+/* ==========================================================================
+   Skin: Dark (Tmavý védský)
+   Deep charcoal background with luminous gold/amber accents.
+   ========================================================================== */
+
+.sanskrt-verse-container.skin-dark {
+	background: #16181d;
+	color: #f0f3f6;
+	border: 1px solid #282d37;
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+	--sanskrt-badge-bg: #222630;
+	--sanskrt-badge-border: #363c4c;
+	--sanskrt-pill-border: #3b4254;
+	--sanskrt-pill-hover-bg: #282e3b;
+	--sanskrt-highlight-bg: rgba(255, 209, 102, 0.28);
+	--sanskrt-highlight-border: #ffd166;
+	--sanskrt-highlight-active: rgba(255, 209, 102, 0.52);
+	--sanskrt-modal-bg: #1c2027;
+	--sanskrt-modal-color: #f0f3f6;
+	--sanskrt-modal-border: #363c4c;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-verse-header {
+	border-bottom-color: #282d37;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-verse-title {
+	color: #ffd166;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-controls-bar {
+	background: #1f232b;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-pill-toggle.is-active {
+	background: #ffd166;
+	color: #121417;
+	border-color: #ffd166;
+	font-weight: 600;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-translation-item {
+	background: #1c2027;
+	border-left-color: #ffd166;
+}
+
+.sanskrt-verse-container.skin-dark .sanskrt-commentary-card {
+	background: #1c2027;
+	border-color: #2b313d;
+}

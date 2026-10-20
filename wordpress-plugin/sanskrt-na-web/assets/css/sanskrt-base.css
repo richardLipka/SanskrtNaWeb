@@ -1,0 +1,559 @@
+/**
+ * SanskrtNaWeb - Base Stylesheet
+ * 
+ * Maximally respects the active WordPress theme (typography, colors, borders, line-heights).
+ * Provides semantic layout, cross-highlighting, and interactive layer controls.
+ */
+
+:root {
+	--sanskrt-font-deva: "Tiro Devanagari Sanskrit", "Noto Serif Devanagari", "Mangal", "Siddhanta", serif;
+	--sanskrt-font-iast: inherit;
+	--sanskrt-font-ui: inherit;
+	--sanskrt-highlight-bg: rgba(230, 162, 30, 0.22);
+	--sanskrt-highlight-border: #d48806;
+	--sanskrt-highlight-active: rgba(230, 162, 30, 0.45);
+	--sanskrt-badge-bg: rgba(127, 127, 127, 0.12);
+	--sanskrt-badge-border: rgba(127, 127, 127, 0.22);
+	--sanskrt-pill-border: rgba(127, 127, 127, 0.28);
+	--sanskrt-pill-hover-bg: rgba(127, 127, 127, 0.15);
+	--sanskrt-modal-overlay: rgba(0, 0, 0, 0.55);
+	--sanskrt-modal-bg: #ffffff;
+	--sanskrt-modal-color: #1e1e1e;
+	--sanskrt-modal-border: rgba(0, 0, 0, 0.12);
+}
+
+@media (prefers-color-scheme: dark) {
+	:root {
+		--sanskrt-highlight-bg: rgba(255, 197, 61, 0.28);
+		--sanskrt-highlight-border: #ffd666;
+		--sanskrt-highlight-active: rgba(255, 197, 61, 0.5);
+		--sanskrt-modal-bg: #1f232b;
+		--sanskrt-modal-color: #f0f0f0;
+		--sanskrt-modal-border: rgba(255, 255, 255, 0.15);
+	}
+}
+
+/* ==========================================================================
+   Container & Reset
+   ========================================================================== */
+
+.sanskrt-verse-container {
+	box-sizing: border-box;
+	margin-top: 1.5em;
+	margin-bottom: 1.5em;
+	padding: 1.25em 1.5em;
+	font-family: inherit;
+	font-size: 1rem;
+	line-height: 1.6;
+	color: inherit;
+	background: transparent;
+	border-radius: 8px;
+	position: relative;
+	transition: box-shadow 0.2s ease, border-color 0.2s ease;
+}
+
+.sanskrt-verse-container *,
+.sanskrt-verse-container *::before,
+.sanskrt-verse-container *::after {
+	box-sizing: inherit;
+}
+
+/* Theme-native default skin: unobtrusive, inherits everything from current theme */
+.sanskrt-verse-container.skin-native {
+	border: 1px solid rgba(128, 128, 128, 0.25);
+	background: transparent;
+}
+
+/* ==========================================================================
+   Header & Metadata
+   ========================================================================== */
+
+.sanskrt-verse-header {
+	display: flex;
+	flex-wrap: wrap;
+	justify-content: space-between;
+	align-items: center;
+	gap: 0.75rem;
+	padding-bottom: 0.75rem;
+	margin-bottom: 1rem;
+	border-bottom: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+.sanskrt-verse-identity {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.sanskrt-verse-title {
+	margin: 0;
+	padding: 0;
+	font-size: 1.15em;
+	font-weight: 600;
+	line-height: 1.25;
+	color: inherit;
+	display: inline-flex;
+	align-items: baseline;
+	gap: 0.35rem;
+}
+
+.sanskrt-book-name {
+	font-weight: 700;
+}
+
+.sanskrt-verse-num {
+	opacity: 0.85;
+}
+
+.sanskrt-chapter-name {
+	font-size: 0.88em;
+	opacity: 0.75;
+	font-style: italic;
+}
+
+.sanskrt-verse-meta {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	flex-wrap: wrap;
+}
+
+.sanskrt-badge {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.3rem;
+	padding: 0.2em 0.55em;
+	font-size: 0.75em;
+	font-family: inherit;
+	font-weight: 500;
+	border-radius: 4px;
+	background: var(--sanskrt-badge-bg);
+	border: 1px solid var(--sanskrt-badge-border);
+	color: inherit;
+	text-decoration: none;
+	line-height: 1.2;
+}
+
+a.sanskrt-badge-source:hover {
+	text-decoration: underline;
+	opacity: 0.9;
+}
+
+.sanskrt-icon {
+	flex-shrink: 0;
+	vertical-align: middle;
+}
+
+/* ==========================================================================
+   Interactive Controls Bar (Layer toggling pills)
+   ========================================================================== */
+
+.sanskrt-controls-bar {
+	display: flex;
+	align-items: center;
+	flex-wrap: wrap;
+	gap: 0.5rem;
+	margin-bottom: 1.25rem;
+	padding: 0.45rem 0.65rem;
+	border-radius: 6px;
+	background: rgba(128, 128, 128, 0.08);
+	font-size: 0.85rem;
+}
+
+.sanskrt-controls-label {
+	font-size: 0.8em;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	opacity: 0.7;
+	margin-right: 0.2rem;
+}
+
+.sanskrt-pill-group {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+}
+
+.sanskrt-pill-toggle {
+	display: inline-flex;
+	align-items: center;
+	padding: 0.25em 0.65em;
+	font-family: inherit;
+	font-size: 0.82em;
+	font-weight: 500;
+	line-height: 1.3;
+	border-radius: 9999px;
+	border: 1px solid var(--sanskrt-pill-border);
+	background: transparent;
+	color: inherit;
+	cursor: pointer;
+	transition: all 0.15s ease;
+	user-select: none;
+}
+
+.sanskrt-pill-toggle:hover {
+	background: var(--sanskrt-pill-hover-bg);
+}
+
+.sanskrt-pill-toggle.is-active {
+	background: currentColor;
+	color: var(--sanskrt-modal-bg);
+	border-color: currentColor;
+}
+
+/* Ensure contrast when button is inverted with currentColor */
+.sanskrt-pill-toggle.is-active:hover {
+	opacity: 0.85;
+}
+
+/* ==========================================================================
+   Script Layers (Devanagari, Padaccheda, IAST, Phonetic)
+   ========================================================================== */
+
+.sanskrt-layers-body {
+	display: flex;
+	flex-direction: column;
+	gap: 1.25rem;
+}
+
+.sanskrt-layer {
+	width: 100%;
+}
+
+.sanskrt-layer-header {
+	margin-bottom: 0.35rem;
+}
+
+.sanskrt-layer-label {
+	font-size: 0.8em;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.04em;
+	opacity: 0.7;
+}
+
+.sanskrt-font-devanagari {
+	font-family: var(--sanskrt-font-deva);
+	font-size: 1.45em;
+	line-height: 1.65;
+	letter-spacing: 0.015em;
+}
+
+.sanskrt-font-iast {
+	font-family: var(--sanskrt-font-iast);
+	font-size: 1.1em;
+	line-height: 1.5;
+	font-style: italic;
+}
+
+.sanskrt-font-phonetic {
+	font-size: 0.98em;
+	opacity: 0.9;
+}
+
+.sanskrt-pada-line {
+	padding: 0.25rem 0;
+}
+
+.sanskrt-verse-danda {
+	font-weight: bold;
+	opacity: 0.65;
+	padding: 0 0.15em;
+}
+
+/* ==========================================================================
+   Interactive Tokens & Cross-highlighting
+   ========================================================================== */
+
+.sanskrt-token {
+	display: inline;
+	padding: 0.08em 0.22em;
+	margin: 0 0.03em;
+	border-radius: 4px;
+	cursor: pointer;
+	text-decoration: underline dotted rgba(128, 128, 128, 0.45);
+	text-underline-offset: 3px;
+	transition: background-color 0.15s ease, box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.sanskrt-token:hover,
+.sanskrt-token:focus-visible {
+	background-color: var(--sanskrt-highlight-bg);
+	outline: none;
+	text-decoration: none;
+	box-shadow: 0 0 0 1px var(--sanskrt-highlight-border);
+}
+
+/* Active cross-highlight state */
+.sanskrt-token.sanskrt-cross-active {
+	background-color: var(--sanskrt-highlight-active);
+	box-shadow: 0 0 0 2px var(--sanskrt-highlight-border);
+	text-decoration: none;
+	border-radius: 4px;
+}
+
+.sanskrt-aligned-word {
+	display: inline;
+	padding: 0.04em 0.18em;
+	border-radius: 3px;
+	cursor: pointer;
+	transition: background-color 0.15s ease, font-weight 0.15s ease;
+}
+
+.sanskrt-aligned-word.sanskrt-cross-active {
+	background-color: var(--sanskrt-highlight-active);
+	box-shadow: 0 0 0 1.5px var(--sanskrt-highlight-border);
+	font-weight: 600;
+}
+
+/* ==========================================================================
+   Translations Layer
+   ========================================================================== */
+
+.sanskrt-layer-translation-group {
+	display: flex;
+	flex-direction: column;
+	gap: 0.85rem;
+	padding-top: 0.75rem;
+	border-top: 1px dashed rgba(128, 128, 128, 0.22);
+}
+
+.sanskrt-translation-item {
+	padding: 0.5rem 0.75rem;
+	border-radius: 6px;
+	background: rgba(128, 128, 128, 0.05);
+	border-left: 3px solid rgba(128, 128, 128, 0.35);
+}
+
+.sanskrt-translation-item.is-literal {
+	border-left-color: #d48806;
+	background: rgba(212, 136, 6, 0.05);
+}
+
+.sanskrt-translation-meta {
+	display: flex;
+	align-items: center;
+	gap: 0.4rem;
+	margin-bottom: 0.25rem;
+}
+
+.sanskrt-trans-label {
+	font-size: 0.8em;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.03em;
+	opacity: 0.75;
+}
+
+.sanskrt-lang-tag {
+	font-size: 0.68em;
+	font-weight: 700;
+	padding: 0.1em 0.35em;
+	border-radius: 3px;
+	background: rgba(128, 128, 128, 0.2);
+}
+
+.sanskrt-translation-text {
+	font-size: 1.05em;
+	line-height: 1.55;
+}
+
+/* ==========================================================================
+   Commentaries (Bhāṣya) Layer
+   ========================================================================== */
+
+.sanskrt-layer-commentaries {
+	padding-top: 1rem;
+	border-top: 1px solid rgba(128, 128, 128, 0.18);
+}
+
+.sanskrt-layer-heading {
+	display: inline-flex;
+	align-items: center;
+	gap: 0.4rem;
+	font-size: 0.95em;
+	font-weight: 600;
+	margin: 0 0 0.85rem 0;
+	opacity: 0.85;
+}
+
+.sanskrt-commentaries-list {
+	display: flex;
+	flex-direction: column;
+	gap: 0.85rem;
+}
+
+.sanskrt-commentary-card {
+	padding: 0.85rem 1rem;
+	border-radius: 6px;
+	background: rgba(128, 128, 128, 0.06);
+	border: 1px solid rgba(128, 128, 128, 0.15);
+}
+
+.sanskrt-commentary-card.is-original-sanskrit {
+	border-left: 3px solid #1890ff;
+}
+
+.sanskrt-commentary-header {
+	margin-bottom: 0.45rem;
+	font-size: 0.88em;
+	display: flex;
+	flex-wrap: wrap;
+	align-items: baseline;
+	gap: 0.4rem;
+}
+
+.sanskrt-comm-author {
+	font-weight: 700;
+}
+
+.sanskrt-comm-tradition {
+	font-size: 0.82em;
+	opacity: 0.75;
+	padding: 0.08em 0.4em;
+	border-radius: 3px;
+	background: rgba(128, 128, 128, 0.12);
+}
+
+.sanskrt-comm-title {
+	font-style: italic;
+	opacity: 0.85;
+}
+
+.sanskrt-commentary-body {
+	font-size: 0.98em;
+	line-height: 1.6;
+	margin-bottom: 0.4rem;
+}
+
+.sanskrt-commentary-body.sanskrt-font-devanagari {
+	font-size: 1.25em;
+	line-height: 1.65;
+}
+
+.sanskrt-commentary-footer {
+	font-size: 0.78em;
+	opacity: 0.65;
+	text-align: right;
+}
+
+/* ==========================================================================
+   Word Lookup Popup Modal
+   ========================================================================== */
+
+.sanskrt-modal-backdrop {
+	position: fixed;
+	inset: 0;
+	background: var(--sanskrt-modal-overlay);
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	z-index: 999999;
+	padding: 1.5rem;
+	backdrop-filter: blur(3px);
+	animation: sanskrt-fade-in 0.2s ease-out;
+}
+
+.sanskrt-modal-dialog {
+	background: var(--sanskrt-modal-bg);
+	color: var(--sanskrt-modal-color);
+	border: 1px solid var(--sanskrt-modal-border);
+	box-shadow: 0 12px 35px rgba(0, 0, 0, 0.28);
+	border-radius: 10px;
+	width: 100%;
+	max-width: 480px;
+	padding: 1.5rem;
+	position: relative;
+	animation: sanskrt-scale-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.sanskrt-modal-header {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	padding-bottom: 0.75rem;
+	margin-bottom: 1rem;
+	border-bottom: 1px solid var(--sanskrt-modal-border);
+}
+
+.sanskrt-modal-title {
+	margin: 0;
+	font-size: 1.15em;
+	font-weight: 700;
+	display: flex;
+	flex-direction: column;
+	gap: 0.25rem;
+}
+
+.sanskrt-modal-word-deva {
+	font-family: var(--sanskrt-font-deva);
+	font-size: 1.5em;
+	line-height: 1.2;
+}
+
+.sanskrt-modal-word-iast {
+	font-size: 0.85em;
+	font-weight: 500;
+	opacity: 0.8;
+	font-style: italic;
+}
+
+.sanskrt-modal-close {
+	background: transparent;
+	border: none;
+	color: inherit;
+	cursor: pointer;
+	font-size: 1.4rem;
+	line-height: 1;
+	padding: 0.25rem 0.5rem;
+	border-radius: 4px;
+	opacity: 0.7;
+	transition: opacity 0.15s ease, background 0.15s ease;
+}
+
+.sanskrt-modal-close:hover {
+	opacity: 1;
+	background: rgba(128, 128, 128, 0.15);
+}
+
+.sanskrt-modal-row {
+	margin-bottom: 0.75rem;
+	font-size: 0.95em;
+	line-height: 1.5;
+}
+
+.sanskrt-modal-label {
+	display: block;
+	font-size: 0.75em;
+	font-weight: 600;
+	text-transform: uppercase;
+	letter-spacing: 0.05em;
+	opacity: 0.65;
+	margin-bottom: 0.15rem;
+}
+
+.sanskrt-modal-value {
+	font-weight: 500;
+}
+
+.sanskrt-grammar-tag {
+	display: inline-block;
+	padding: 0.15em 0.5em;
+	border-radius: 4px;
+	background: rgba(24, 144, 255, 0.15);
+	color: #1890ff;
+	font-weight: 600;
+	font-size: 0.88em;
+}
+
+@keyframes sanskrt-fade-in {
+	from { opacity: 0; }
+	to { opacity: 1; }
+}
+
+@keyframes sanskrt-scale-in {
+	from { transform: scale(0.96); opacity: 0; }
+	to { transform: scale(1); opacity: 1; }
+}

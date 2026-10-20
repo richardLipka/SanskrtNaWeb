@@ -209,6 +209,18 @@ Překladový editor podporuje jakéhokoliv poskytovatele s OpenAI-kompatibilním
 
 ---
 
+## 4. 🔌 WordPress Plugin (Sanskrt na Web)
+
+Samostatný WordPress plugin pro vkládání připravených bloků sanskrtských textů do stránek a příspěvků.
+- **Umístění:** [`wordpress-plugin/sanskrt-na-web/`](file:///f:/Vyvoj/AI/SanskrtNaWeb/wordpress-plugin/sanskrt-na-web/)
+- **Čistě pro čtení (Read-Only):** Zabezpečená prezentace bez editačních zásahů ze strany návštěvníků.
+- **Respektování šablony webu (Skin Native):** Ve výchozím stavu 100% přejímá písma, barvy a styl vašeho WordPress tématu.
+- **Volitelné vizuální skiny:** *Pergamen*, *Ášram* (šafrán), *Akademický* (indologický), *Tmavý védský*.
+- **Gutenberg blok & Shortcodes:** Blok `sanskrt/verse-viewer` s postranní lištou nastavení viditelnosti vrstev a shortcode `[sanskrt_verse id="..."]` / `[sanskrt_reader ids="..."]`.
+- **Interaktivita:** Křížové zvýrazňování slov při najetí myší (Dévanágarí ↔ IAST ↔ Překlad) a morfologický popup s lemmou a gramatikou po kliknutí.
+
+---
+
 ## 📄 Licence
 
 Tento projekt je licencován pod licencí [MIT](LICENSE).
