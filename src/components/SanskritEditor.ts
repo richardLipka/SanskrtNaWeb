@@ -1,4 +1,4 @@
-import { Verse, SanskritDocument, Token, CommentaryItem, getVerseCommentaries } from '../core/types/schema.ts';
+import { Verse, SanskritDocument, Token, CommentaryItem, getVerseCommentaries, VerseSchema, AppSettingsSchema } from '../core/types/schema.ts';
 import { SanskritVerseElement } from './SanskritVerse.ts';
 import {
   insertAtCursor,
@@ -23,14 +23,13 @@ import {
 import {
   buildBookHierarchy,
   bulkImportText,
+  createTokensFromIast,
   filterCorpus,
   exportCorpusSubset,
   BookHierarchy
 } from '../core/corpus/bookManager.ts';
 import { defaultSanskritAdapter } from '../core/adapters/sanskritAdapter.ts';
 import { transliterateLipi } from '../core/lemmatizer/vidyutAdapter.ts';
-import { analyzeSanskritWord } from '../core/lemmatizer/sanskritLemmatizer.ts';
-import { createCzechRules } from '../core/transliteration/rules.ts';
 import {
   SupportedLanguage,
   formatGrammarAnalysis
@@ -45,6 +44,7 @@ import {
   saveWorkspaceBundleToCache
 } from '../core/storage/workspaceBundle.ts';
 import { getDictionaryUrl, sanitizeSearchLemma } from '../core/dictionaries/dictionaryBuilder.ts';
+import { escapeHtml } from '../core/utils/html.ts';
 import {
   LLMConfig,
   LLMTaskType,
@@ -151,6 +151,11 @@ export class SanskritEditorElement extends HTMLElement {
   };
   private _llmLoading: boolean = false;
   private _llmLastResult: LLMExecutionResult | null = null;
+  /** Verse the last LLM result belongs to – results are never applied to another verse */
+  private _llmResultVerseId: string | null = null;
+  private _llmAbort: AbortController | null = null;
+  private _toastTimer: ReturnType<typeof setTimeout> | null = null;
+  private _toastEl: HTMLElement | null = null;
   private _llmError: string | null = null;
   private _showPromptPreview: boolean = false;
   private _showRawJsonResponse: boolean = false;
@@ -217,6 +222,8 @@ export class SanskritEditorElement extends HTMLElement {
       window.removeEventListener('keydown', this._onGlobalKeyDown);
       this._onGlobalKeyDown = null;
     }
+    this._llmAbort?.abort();
+    this._toastEl?.remove();
   }
 
   get verse(): Verse | null {
@@ -224,19 +231,44 @@ export class SanskritEditorElement extends HTMLElement {
   }
 
   set verse(v: Verse | null) {
-    this._verse = v ? JSON.parse(JSON.stringify(v)) : null;
-    if (this._verse) {
-      if (!this._verse.commentaries || this._verse.commentaries.length === 0) {
-        this._verse.commentaries = getVerseCommentaries(this._verse);
-      }
-      if (this._verse.tokens.length > 0 && !this._selectedTokenId) {
-        this._selectedTokenId = this._verse.tokens[0].id;
-      }
-      if (this._verse.translationStatus) {
-        this._verseStatuses[this._verse.id] = this._verse.translationStatus as VerseTranslationStatus;
-      }
-    }
+    this.adoptVerse(v);
     this.render();
+  }
+
+  /**
+   * Makes a working copy of a verse the active one: materializes structured commentaries,
+   * keeps the selected token only if it exists in this verse and drops per-verse UI state
+   * (LLM result, commentary editing) when the verse changes.
+   */
+  private adoptVerse(v: Verse | null) {
+    const previousId = this._verse?.id;
+    this._verse = v ? JSON.parse(JSON.stringify(v)) : null;
+    if (!this._verse) {
+      this._selectedTokenId = null;
+      return;
+    }
+
+    if (!this._verse.commentaries || this._verse.commentaries.length === 0) {
+      this._verse.commentaries = getVerseCommentaries(this._verse);
+    }
+    // Structured commentaries are authoritative from now on; legacy fields would otherwise
+    // resurrect deleted entries once the list becomes empty.
+    this._verse.commentary_cs = undefined;
+    this._verse.commentary_by_lang = undefined;
+
+    if (!this._verse.tokens.some((t) => t.id === this._selectedTokenId)) {
+      this._selectedTokenId = this._verse.tokens[0]?.id ?? null;
+    }
+    if (this._verse.translationStatus) {
+      this._verseStatuses[this._verse.id] = this._verse.translationStatus as VerseTranslationStatus;
+    }
+    if (previousId !== this._verse.id) {
+      this._llmLastResult = null;
+      this._llmResultVerseId = null;
+      this._llmError = null;
+      this._editingCommentaryId = null;
+      this._showAddCommentaryForm = false;
+    }
   }
 
   get document(): SanskritDocument | null {
@@ -254,19 +286,10 @@ export class SanskritEditorElement extends HTMLElement {
       });
       const currentBelongs = this._verse && doc.verses.some((v) => v.id === this._verse!.id);
       if (!currentBelongs) {
-        this._verse = JSON.parse(JSON.stringify(doc.verses[0]));
-        if (this._verse) {
-          if (!this._verse.commentaries || this._verse.commentaries.length === 0) {
-            this._verse.commentaries = getVerseCommentaries(this._verse);
-          }
-          if (this._verse.tokens.length > 0) {
-            this._selectedTokenId = this._verse.tokens[0].id;
-          }
-        }
+        this.adoptVerse(doc.verses[0]);
       }
     } else {
-      this._verse = null;
-      this._selectedTokenId = null;
+      this.adoptVerse(null);
     }
     this.render();
   }
@@ -286,6 +309,14 @@ export class SanskritEditorElement extends HTMLElement {
     }
 
     this._onGlobalKeyDown = (e: KeyboardEvent) => {
+      // Shortcuts apply only while the editor is visible and focus is not elsewhere on the page
+      // (e.g. in the reader tab or another app input).
+      const active = document.activeElement;
+      const focusInside = active ? this.contains(active) : false;
+      const focusNeutral = !active || active === document.body;
+      const visible = this.isConnected && this.getClientRects().length > 0;
+      if (!focusInside && !(focusNeutral && visible)) return;
+
       // If user presses Ctrl + Enter in translation area: save and go to next verse
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
         e.preventDefault();
@@ -306,11 +337,8 @@ export class SanskritEditorElement extends HTMLElement {
       }
       // Ctrl + S in editor: save project bundle
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
-        // Only intercept if active inside editor
-        if (this.contains(document.activeElement)) {
-          e.preventDefault();
-          this.saveFullProjectBundle();
-        }
+        e.preventDefault();
+        this.saveFullProjectBundle();
       }
     };
 
@@ -397,7 +425,7 @@ export class SanskritEditorElement extends HTMLElement {
               🤖 ${t('llmPanelTitle', lang)}
             </span>
             <span class="badge" style="font-size: 0.72rem; padding: 2px 7px; border-radius: 4px; background: var(--bg-card); border: 1px solid var(--accent-gold); color: var(--text-secondary);">
-              ${cfg.providerPreset.toUpperCase()}: ${cfg.model}
+              ${escapeHtml(cfg.providerPreset.toUpperCase())}: ${escapeHtml(cfg.model)}
             </span>
           </div>
           <div style="display: flex; align-items: center; gap: 0.4rem;">
@@ -452,20 +480,20 @@ export class SanskritEditorElement extends HTMLElement {
 
         <div class="form-group">
           <label style="font-weight: 600; font-size: 0.82rem;">${t('llmEndpointLabel', lang)}:</label>
-          <input type="text" id="llm-endpoint-input" class="form-input" value="${cfg.endpoint}" placeholder="https://api.openai.com/v1" />
+          <input type="text" id="llm-endpoint-input" class="form-input" value="${escapeHtml(cfg.endpoint)}" placeholder="https://api.openai.com/v1" />
         </div>
 
         <div class="form-group">
           <label style="font-weight: 600; font-size: 0.82rem;">${t('llmApiKeyLabel', lang)}:</label>
           <div style="display: flex; gap: 0.3rem;">
-            <input type="password" id="llm-apikey-input" class="form-input" value="${cfg.apiKey}" placeholder="sk-..." />
+            <input type="password" id="llm-apikey-input" class="form-input" value="${escapeHtml(cfg.apiKey)}" placeholder="sk-..." />
             <button type="button" class="btn btn-sm btn-outline" id="btn-toggle-apikey-vis" title="Zobrazit / skrýt klíč">👁️</button>
           </div>
         </div>
 
         <div class="form-group">
           <label style="font-weight: 600; font-size: 0.82rem;">${t('llmModelLabel', lang)}:</label>
-          <input type="text" id="llm-model-input" class="form-input" value="${cfg.model}" placeholder="gpt-4o-mini" />
+          <input type="text" id="llm-model-input" class="form-input" value="${escapeHtml(cfg.model)}" placeholder="gpt-4o-mini" />
         </div>
 
         <div class="form-group">
@@ -486,7 +514,7 @@ export class SanskritEditorElement extends HTMLElement {
 
         <div class="form-group" style="grid-column: 1 / -1;">
           <label style="font-weight: 600; font-size: 0.82rem;">${t('llmCustomPromptLabel', lang)}:</label>
-          <textarea id="llm-custom-prompt-input" class="form-input" rows="2" placeholder="Nepovinné: přepsat výchozí systémový prompt...">${cfg.customSystemPrompt || ''}</textarea>
+          <textarea id="llm-custom-prompt-input" class="form-input" rows="2" placeholder="Nepovinné: přepsat výchozí systémový prompt...">${escapeHtml(cfg.customSystemPrompt || '')}</textarea>
         </div>
 
         <div style="grid-column: 1 / -1; display: flex; justify-content: flex-end; gap: 0.5rem;">
@@ -510,7 +538,7 @@ export class SanskritEditorElement extends HTMLElement {
     const promptPreviewHtml = this._showPromptPreview ? `
       <div style="margin: 0.6rem 0;">
         <label style="font-size: 0.76rem; font-weight: 700; text-transform: uppercase; color: var(--text-muted);">${t('llmPromptPreviewLabel', lang)}:</label>
-        <textarea id="llm-prompt-preview-textarea" class="form-input" style="font-family: monospace; font-size: 0.78rem; width: 100%;" rows="6">${this.getCurrentPromptPreview()}</textarea>
+        <textarea id="llm-prompt-preview-textarea" class="form-input" style="font-family: monospace; font-size: 0.78rem; width: 100%;" rows="6">${escapeHtml(this.getCurrentPromptPreview())}</textarea>
       </div>
     ` : '';
 
@@ -538,24 +566,24 @@ export class SanskritEditorElement extends HTMLElement {
         ${this._llmLoading ? `
           <div class="cat-llm-loading">
             <div class="llm-spinner"></div>
-            <span>${t('llmRunning', lang)} (${this._llmConfig.model})...</span>
+            <span>${t('llmRunning', lang)} (${escapeHtml(this._llmConfig.model)})...</span>
           </div>
         ` : ''}
 
         ${this._llmError ? `
           <div class="cat-llm-error">
-            <strong>⚠️ ${t('llmStatusError', lang)}:</strong> ${this._llmError}
+            <strong>⚠️ ${t('llmStatusError', lang)}:</strong> ${escapeHtml(this._llmError)}
           </div>
         ` : ''}
 
-        ${this._llmLastResult && this._llmLastResult.success ? this.renderLLMResultView() : ''}
+        ${this.currentLLMResult() ? this.renderLLMResultView() : ''}
       </div>
     `;
   }
 
   private renderLLMResultView(): string {
     const lang = this._uiLang;
-    const res = this._llmLastResult;
+    const res = this.currentLLMResult();
     if (!res || !res.data) return '';
 
     let contentHtml = '';
@@ -571,14 +599,14 @@ export class SanskritEditorElement extends HTMLElement {
             </button>
           </div>
           <div class="cat-llm-quote-card" style="font-size: 1rem; color: var(--text-primary); margin-bottom: 0.8rem; font-style: italic; background: rgba(217, 119, 6, 0.08); padding: 0.6rem 0.8rem; border-left: 3px solid var(--accent-gold); border-radius: 4px;">
-            „${data.fluentTranslation || '—'}“
+            „${escapeHtml(data.fluentTranslation || '—')}“
           </div>
 
           ${data.literalTranslation ? `
             <div style="margin-bottom: 0.6rem;">
               <strong style="color: var(--text-secondary); font-size: 0.8rem;">${lang === 'cs' ? 'Doslovný překlad:' : 'Literal Translation:'}</strong>
               <div style="font-size: 0.88rem; color: var(--text-secondary); margin-top: 0.2rem;">
-                ${data.literalTranslation}
+                ${escapeHtml(data.literalTranslation)}
               </div>
             </div>
           ` : ''}
@@ -587,7 +615,7 @@ export class SanskritEditorElement extends HTMLElement {
             <div style="margin-bottom: 0.6rem;">
               <strong style="color: var(--text-secondary); font-size: 0.8rem;">${lang === 'cs' ? 'Alternativní formulace / nuance:' : 'Alternative nuances:'}</strong>
               <ul style="margin: 0.3rem 0; padding-left: 1.2rem; font-size: 0.84rem; color: var(--text-secondary);">
-                ${data.alternativeTranslations.map((alt: string) => `<li>${alt}</li>`).join('')}
+                ${data.alternativeTranslations.map((alt: string) => `<li>${escapeHtml(alt)}</li>`).join('')}
               </ul>
             </div>
           ` : ''}
@@ -601,7 +629,7 @@ export class SanskritEditorElement extends HTMLElement {
                 </button>
               </div>
               <div style="font-size: 0.84rem; line-height: 1.4; color: var(--text-primary);">
-                ${data.commentary}
+                ${escapeHtml(data.commentary)}
               </div>
             </div>
           ` : ''}
@@ -614,7 +642,7 @@ export class SanskritEditorElement extends HTMLElement {
           <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.4rem;">
             <div>
               <strong style="color: var(--accent-gold); font-size: 0.9rem;">${lang === 'cs' ? 'Navržené párování slov' : 'Suggested Word Alignments'}</strong>
-              ${data.confidence ? `<span style="font-size: 0.74rem; color: var(--text-muted); margin-left: 0.5rem;">(spolehlivost: ${Math.round(data.confidence * 100)}%)</span>` : ''}
+              ${data.confidence ? `<span style="font-size: 0.74rem; color: var(--text-muted); margin-left: 0.5rem;">(spolehlivost: ${Math.round(Number(data.confidence) * 100)}%)</span>` : ''}
             </div>
             <button class="btn btn-sm btn-primary" id="btn-llm-apply-alignments">
               📥 ${t('llmApplyAlignments', lang)}
@@ -631,9 +659,9 @@ export class SanskritEditorElement extends HTMLElement {
             <tbody>
               ${(data.alignments || []).map((a: any) => `
                 <tr style="border-bottom: 1px solid var(--bg-card-border);">
-                  <td style="padding: 6px; font-weight: 600; color: var(--accent-gold-dark);">${a.tokenIast}</td>
+                  <td style="padding: 6px; font-weight: 600; color: var(--accent-gold-dark);">${escapeHtml(a.tokenIast)}</td>
                   <td style="padding: 6px; color: var(--text-primary);">
-                    ${(a.matchedWords || []).map((w: string) => `<span class="cat-glossary-match-pill" style="margin-right: 4px;">${w}</span>`).join('') || '—'}
+                    ${(a.matchedWords || []).map((w: string) => `<span class="cat-glossary-match-pill" style="margin-right: 4px;">${escapeHtml(w)}</span>`).join('') || '—'}
                   </td>
                 </tr>
               `).join('')}
@@ -674,9 +702,9 @@ export class SanskritEditorElement extends HTMLElement {
               <tbody>
                 ${corrs.map((c: any) => `
                   <tr style="border-bottom: 1px solid var(--bg-card-border);">
-                    <td style="padding: 6px; font-weight: 600;">${c.tokenIast}</td>
-                    <td style="padding: 6px; color: var(--accent-terracotta);">${c.suggestedIast || c.tokenIast} ${c.suggestedLemma ? `(${c.suggestedLemma})` : ''}</td>
-                    <td style="padding: 6px; font-size: 0.78rem; color: var(--text-secondary);">${c.explanation || '—'}</td>
+                    <td style="padding: 6px; font-weight: 600;">${escapeHtml(c.tokenIast)}</td>
+                    <td style="padding: 6px; color: var(--accent-terracotta);">${escapeHtml(c.suggestedIast || c.tokenIast)} ${c.suggestedLemma ? `(${escapeHtml(c.suggestedLemma)})` : ''}</td>
+                    <td style="padding: 6px; font-size: 0.78rem; color: var(--text-secondary);">${escapeHtml(c.explanation || '—')}</td>
                   </tr>
                 `).join('')}
               </tbody>
@@ -685,8 +713,8 @@ export class SanskritEditorElement extends HTMLElement {
 
           ${data.meterNotes || data.sandhiNotes ? `
             <div style="margin-top: 0.6rem; font-size: 0.8rem; color: var(--text-muted); border-top: 1px dashed var(--bg-card-border); padding-top: 0.4rem;">
-              ${data.meterNotes ? `<div><strong>Metrum:</strong> ${data.meterNotes}</div>` : ''}
-              ${data.sandhiNotes ? `<div><strong>Sandhi:</strong> ${data.sandhiNotes}</div>` : ''}
+              ${data.meterNotes ? `<div><strong>Metrum:</strong> ${escapeHtml(data.meterNotes)}</div>` : ''}
+              ${data.sandhiNotes ? `<div><strong>Sandhi:</strong> ${escapeHtml(data.sandhiNotes)}</div>` : ''}
             </div>
           ` : ''}
         </div>
@@ -699,7 +727,7 @@ export class SanskritEditorElement extends HTMLElement {
             <strong style="color: var(--accent-gold); font-size: 0.9rem;">${lang === 'cs' ? 'Odborná zpětná vazba a hodnocení překladu' : 'Critique & Evaluation'}</strong>
             ${typeof data.qualityScore === 'number' ? `
               <div class="llm-score-badge" style="background: linear-gradient(135deg, var(--accent-gold), #10b981); color: white; padding: 2px 10px; border-radius: 12px; font-weight: 700; font-size: 0.85rem;">
-                ${data.qualityScore} / 100
+                ${escapeHtml(data.qualityScore)} / 100
               </div>
             ` : ''}
           </div>
@@ -708,7 +736,7 @@ export class SanskritEditorElement extends HTMLElement {
             <div style="margin-bottom: 0.5rem;">
               <strong style="color: #10b981; font-size: 0.8rem;">✓ ${lang === 'cs' ? 'Silné stránky překladu:' : 'Strengths:'}</strong>
               <ul style="margin: 0.2rem 0; padding-left: 1.2rem; font-size: 0.82rem; color: var(--text-primary);">
-                ${data.strengths.map((s: string) => `<li>${s}</li>`).join('')}
+                ${data.strengths.map((s: string) => `<li>${escapeHtml(s)}</li>`).join('')}
               </ul>
             </div>
           ` : ''}
@@ -717,14 +745,14 @@ export class SanskritEditorElement extends HTMLElement {
             <div style="margin-bottom: 0.5rem;">
               <strong style="color: #f59e0b; font-size: 0.8rem;">💡 ${lang === 'cs' ? 'Doporučení pro zpřesnění a stylizaci:' : 'Suggestions for Improvement:'}</strong>
               <ul style="margin: 0.2rem 0; padding-left: 1.2rem; font-size: 0.82rem; color: var(--text-primary);">
-                ${data.suggestions.map((s: string) => `<li>${s}</li>`).join('')}
+                ${data.suggestions.map((s: string) => `<li>${escapeHtml(s)}</li>`).join('')}
               </ul>
             </div>
           ` : ''}
 
           ${data.philosophicalContext ? `
             <div style="margin-top: 0.4rem; padding-top: 0.4rem; border-top: 1px dashed var(--bg-card-border); font-size: 0.82rem; color: var(--text-secondary);">
-              <strong>Filozofický kontext:</strong> ${data.philosophicalContext}
+              <strong>Filozofický kontext:</strong> ${escapeHtml(data.philosophicalContext)}
             </div>
           ` : ''}
         </div>
@@ -767,8 +795,13 @@ export class SanskritEditorElement extends HTMLElement {
       }
     }
 
-    const currentTransEl = this.querySelector('#edit-verse-translation') as HTMLTextAreaElement;
-    const currentTrans = currentTransEl?.value ||
+    // The active translation (as typed, possibly unsaved) when it is in the target language
+    const active = v.translations?.find((t) => t.id === this._activeTranslationId);
+    const currentTransEl = this.querySelector('#edit-trans-text') as HTMLTextAreaElement | null;
+    const activeText = active && active.lang === this._llmConfig.targetLanguage
+      ? (currentTransEl?.value ?? active.text)
+      : '';
+    const currentTrans = activeText ||
       v.translations?.find((t) => t.lang === this._llmConfig.targetLanguage)?.text ||
       v.translations?.[0]?.text ||
       '';
@@ -788,27 +821,66 @@ export class SanskritEditorElement extends HTMLElement {
 
   private async runLLMTask() {
     if (!this._verse) {
-      alert('Nejprve vyberte verš k analýze.');
+      this.notify(this._uiLang === 'cs' ? 'Nejprve vyberte verš k analýze.' : 'Select a verse first.', 'error');
       return;
     }
 
+    this.syncInputsToVerse();
+    const verseId = this._verse.id;
+    this._llmAbort?.abort();
+    const abort = new AbortController();
+    this._llmAbort = abort;
     this._llmLoading = true;
     this._llmError = null;
+    this._llmLastResult = null;
     this.render();
 
     try {
       const ctx = this.getLLMPromptContext();
-      const res = await executeLLMTask(this._activeLLMTask, ctx, this._llmConfig);
+      const res = await executeLLMTask(this._activeLLMTask, ctx, this._llmConfig, undefined, { signal: abort.signal });
+      if (abort.signal.aborted || this._verse?.id !== verseId) return; // user moved on
       this._llmLastResult = res;
+      this._llmResultVerseId = verseId;
       if (!res.success) {
         this._llmError = res.error || 'Neznámá chyba LLM.';
       }
     } catch (err: any) {
       this._llmError = err.message;
     } finally {
-      this._llmLoading = false;
-      this.render();
+      if (this._llmAbort === abort) {
+        this._llmAbort = null;
+        this._llmLoading = false;
+        this.render();
+      }
     }
+  }
+
+  /** The last LLM result if it belongs to the active verse and task, otherwise null. */
+  private currentLLMResult(): LLMExecutionResult | null {
+    const res = this._llmLastResult;
+    if (!res || !res.success || !this._verse) return null;
+    if (this._llmResultVerseId !== this._verse.id || res.taskType !== this._activeLLMTask) return null;
+    return res;
+  }
+
+  /** Non-blocking status message (replaces success alerts); also emitted as 'editor-notify'. */
+  private notify(message: string, type: 'success' | 'error' | 'info' = 'success') {
+    this.dispatchEvent(new CustomEvent('editor-notify', { detail: { message, type }, bubbles: true }));
+    // Lives outside the component because render() replaces the component's whole content
+    let toast = this._toastEl;
+    if (!toast || !toast.isConnected) {
+      toast = document.createElement('div');
+      toast.className = 'editor-toast';
+      toast.style.cssText = 'position: fixed; right: 1rem; bottom: 1rem; z-index: 10000; max-width: 420px; padding: 0.65rem 1rem; border-radius: 8px; box-shadow: 0 4px 14px rgba(0,0,0,0.25); font-size: 0.88rem; color: #fff;';
+      document.body.appendChild(toast);
+      this._toastEl = toast;
+    }
+    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    toast.style.background = type === 'error' ? '#b91c1c' : (type === 'info' ? '#334155' : '#047857');
+    toast.textContent = message;
+    if (this._toastTimer) clearTimeout(this._toastTimer);
+    const shown = toast;
+    this._toastTimer = setTimeout(() => shown.remove(), type === 'error' ? 6000 : 3000);
   }
 
   private renderVerseSelector(): string {
@@ -824,8 +896,8 @@ export class SanskritEditorElement extends HTMLElement {
               const status = this._verseStatuses[v.id] || 'draft';
               const dot = status === 'verified' ? '🟢' : status === 'translated' ? '🔵' : status === 'in_review' ? '🟡' : '⚪';
               return `
-              <option value="${v.id}" ${this._verse?.id === v.id ? 'selected' : ''}>
-                ${dot} ${v.book ? `[${v.book}] ` : ''}Verš ${v.number}
+              <option value="${escapeHtml(v.id)}" ${this._verse?.id === v.id ? 'selected' : ''}>
+                ${dot} ${v.book ? `[${escapeHtml(v.book)}] ` : ''}Verš ${escapeHtml(v.number)}
               </option>`;
             })
             .join('')}
@@ -893,6 +965,9 @@ export class SanskritEditorElement extends HTMLElement {
     const activeTrans = v.translations.find((t) => t.id === this._activeTranslationId) ||
                         v.translations[0] ||
                         { id: 'cs_fluent', label: 'Plynulý český překlad', lang: 'cs', type: 'fluent', text: '' };
+    // Keep the active id in sync with what is displayed, otherwise word bindings and
+    // edits would be stored under a translation id the verse does not have.
+    this._activeTranslationId = activeTrans.id;
 
     // Translation suggestions & Glossary
     const suggestions = this.getGlossarySuggestions();
@@ -907,9 +982,9 @@ export class SanskritEditorElement extends HTMLElement {
             context.prev
               ? `
             <div class="cat-context-ribbon prev-context">
-              <span class="cat-context-badge">▲ ${t('contextPrev', lang)} (${context.prev.number})</span>
-              <span class="deva-font cat-context-deva">${this.getVerseDevaText(context.prev)}</span>
-              <span class="cat-context-trans">„${context.prev.translations[0]?.text || '—'}“</span>
+              <span class="cat-context-badge">▲ ${t('contextPrev', lang)} (${escapeHtml(context.prev.number)})</span>
+              <span class="deva-font cat-context-deva">${escapeHtml(this.getVerseDevaText(context.prev))}</span>
+              <span class="cat-context-trans">„${escapeHtml(context.prev.translations[0]?.text || '—')}“</span>
             </div>`
               : ''
           }
@@ -920,21 +995,21 @@ export class SanskritEditorElement extends HTMLElement {
             <div class="editor-grid-3">
               <label>
                 Číslo verše:
-                <input type="text" id="edit-verse-number" value="${v.number || ''}" class="form-input">
+                <input type="text" id="edit-verse-number" value="${escapeHtml(v.number || '')}" class="form-input">
               </label>
               <label>
                 Kniha:
-                <input type="text" id="edit-verse-book" value="${v.book || ''}" placeholder="např. Bhagavadgītā" class="form-input">
+                <input type="text" id="edit-verse-book" value="${escapeHtml(v.book || '')}" placeholder="např. Bhagavadgītā" class="form-input">
               </label>
               <label>
                 Kapitola:
-                <input type="text" id="edit-verse-chapter" value="${v.chapter || ''}" placeholder="např. 2. Sāṅkhyayoga" class="form-input">
+                <input type="text" id="edit-verse-chapter" value="${escapeHtml(v.chapter || '')}" placeholder="např. 2. Sāṅkhyayoga" class="form-input">
               </label>
             </div>
             <div style="display: flex; gap: 0.5rem; align-items: flex-end; margin-top: 0.6rem;">
               <label style="flex: 1;">
                 Metrum (Chandas):
-                <input type="text" id="edit-verse-meter" value="${v.meter || ''}" placeholder="např. Anuṣṭubh (Śloka)" class="form-input">
+                <input type="text" id="edit-verse-meter" value="${escapeHtml(v.meter || '')}" placeholder="např. Anuṣṭubh (Śloka)" class="form-input">
               </label>
               <button id="btn-auto-detect-meter" class="btn btn-outline" style="font-size: 0.8rem; padding: 0.45rem 0.75rem;">
                 ⚡ Rozpoznat metrum
@@ -974,7 +1049,7 @@ export class SanskritEditorElement extends HTMLElement {
 
             <label style="display: block; margin-top: 0.5rem;">
               Text v dévanágarí:
-              <textarea id="edit-verse-devanagari" class="editor-textarea deva-font" rows="3">${devaText}</textarea>
+              <textarea id="edit-verse-devanagari" class="editor-textarea deva-font" rows="3">${escapeHtml(devaText)}</textarea>
             </label>
 
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.8rem; margin-bottom: 0.3rem;">
@@ -983,7 +1058,7 @@ export class SanskritEditorElement extends HTMLElement {
                 🔄 Přegenerovat z Dévanágarí
               </button>
             </div>
-            <textarea id="edit-verse-iast" class="editor-textarea" rows="2">${iastText}</textarea>
+            <textarea id="edit-verse-iast" class="editor-textarea" rows="2">${escapeHtml(iastText)}</textarea>
           </div>
 
           <!-- Sanskrit Tokens, Morphological Analyzer & On-Demand Grammar Highlights -->
@@ -1010,10 +1085,10 @@ export class SanskritEditorElement extends HTMLElement {
                   const styleBorder = this._showGrammarHighlights ? `border-left: 4px solid ${gAnalysis.categoryColor};` : '';
 
                   return `
-                  <button class="editor-token-pill ${isSelected ? 'active' : ''}" data-token-select="${tk.id}" style="${styleBorder}">
-                    <span class="deva-part">${tk.text.devanagari}</span>
-                    <span class="iast-part">${tk.text.iast}</span>
-                    ${this._showGrammarHighlights && gAnalysis.shortBadge !== '—' ? `<span class="cat-grammar-badge" style="background: ${gAnalysis.categoryColor}20; color: ${gAnalysis.categoryColor};">${gAnalysis.shortBadge}</span>` : ''}
+                  <button class="editor-token-pill ${isSelected ? 'active' : ''}" data-token-select="${escapeHtml(tk.id)}" style="${styleBorder}">
+                    <span class="deva-part">${escapeHtml(tk.text.devanagari)}</span>
+                    <span class="iast-part">${escapeHtml(tk.text.iast)}</span>
+                    ${this._showGrammarHighlights && gAnalysis.shortBadge !== '—' ? `<span class="cat-grammar-badge" style="background: ${gAnalysis.categoryColor}20; color: ${gAnalysis.categoryColor};">${escapeHtml(gAnalysis.shortBadge)}</span>` : ''}
                   </button>`;
                 })
                 .join('')}
@@ -1032,8 +1107,8 @@ export class SanskritEditorElement extends HTMLElement {
                   ${v.translations
                     .map(
                       (t) => `
-                    <option value="${t.id}" ${t.id === activeTrans.id ? 'selected' : ''}>
-                      [${t.lang}] ${t.label}
+                    <option value="${escapeHtml(t.id)}" ${t.id === activeTrans.id ? 'selected' : ''}>
+                      [${escapeHtml(t.lang)}] ${escapeHtml(t.label)}
                     </option>`
                     )
                     .join('')}
@@ -1059,8 +1134,8 @@ export class SanskritEditorElement extends HTMLElement {
                     ? suggestions
                         .map(
                           (s) => `
-                      <button class="glossary-pill" data-glossary-apply="${s.translation}" title="${t('glossaryInOtherVerse', lang)} ${s.verseNumber} (${s.frequency}x)">
-                        <strong>${s.targetWord}</strong> &rarr; „${s.translation}“ <em>(${s.verseNumber})</em>
+                      <button class="glossary-pill" data-glossary-apply="${escapeHtml(s.translation)}" title="${t('glossaryInOtherVerse', lang)} ${escapeHtml(s.verseNumber)} (${s.frequency}x)">
+                        <strong>${escapeHtml(s.targetWord)}</strong> &rarr; „${escapeHtml(s.translation)}“ <em>(${escapeHtml(s.verseNumber)})</em>
                       </button>`
                         )
                         .join('')
@@ -1070,7 +1145,7 @@ export class SanskritEditorElement extends HTMLElement {
             </div>
 
             <!-- Translation Textarea -->
-            <textarea id="edit-trans-text" class="editor-textarea" rows="3" placeholder="Zadejte překlad verše">${activeTrans.text || ''}</textarea>
+            <textarea id="edit-trans-text" class="editor-textarea" rows="3" placeholder="Zadejte překlad verše">${escapeHtml(activeTrans.text || '')}</textarea>
 
             <!-- Navigation Controls directly under translation -->
             <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
@@ -1113,9 +1188,9 @@ export class SanskritEditorElement extends HTMLElement {
             context.next
               ? `
             <div class="cat-context-ribbon next-context">
-              <span class="cat-context-badge">▼ ${t('contextNext', lang)} (${context.next.number})</span>
-              <span class="deva-font cat-context-deva">${this.getVerseDevaText(context.next)}</span>
-              <span class="cat-context-trans">„${context.next.translations[0]?.text || '—'}“</span>
+              <span class="cat-context-badge">▼ ${t('contextNext', lang)} (${escapeHtml(context.next.number)})</span>
+              <span class="deva-font cat-context-deva">${escapeHtml(this.getVerseDevaText(context.next))}</span>
+              <span class="cat-context-trans">„${escapeHtml(context.next.translations[0]?.text || '—')}“</span>
             </div>`
               : ''
           }
@@ -1140,13 +1215,7 @@ export class SanskritEditorElement extends HTMLElement {
   }
 
   private escape(str?: string): string {
-    if (!str) return '';
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#39;');
+    return escapeHtml(str);
   }
 
   private renderCommentariesCard(verse: Verse): string {
@@ -1314,8 +1383,8 @@ export class SanskritEditorElement extends HTMLElement {
                       <input type="text" id="edit-comm-source" class="editor-input" value="${this.escape(comm.source || '')}" placeholder="Pramen" style="width: 100%;">
                     </div>
                     <div style="display: flex; gap: 0.4rem; justify-content: flex-end;">
-                      <button class="btn btn-sm btn-outline btn-cancel-edit-comm" data-comm-id="${comm.id}" type="button">Zrušit</button>
-                      <button class="btn btn-sm btn-primary btn-save-edit-comm" data-comm-id="${comm.id}" type="button">💾 ${t('btnSaveCommentary', lang)}</button>
+                      <button class="btn btn-sm btn-outline btn-cancel-edit-comm" data-comm-id="${escapeHtml(comm.id)}" type="button">Zrušit</button>
+                      <button class="btn btn-sm btn-primary btn-save-edit-comm" data-comm-id="${escapeHtml(comm.id)}" type="button">💾 ${t('btnSaveCommentary', lang)}</button>
                     </div>
                   </div>
                 `;
@@ -1334,10 +1403,10 @@ export class SanskritEditorElement extends HTMLElement {
                         <span class="badge" style="font-size: 0.68rem; font-weight: 700; text-transform: uppercase; background: var(--bg-secondary); padding: 1px 5px; border-radius: 3px;">
                           ${this.escape(comm.lang)}
                         </span>
-                        <button class="btn btn-sm btn-outline btn-edit-comm" data-edit-comm-id="${comm.id}" title="${t('btnEditCommentary', lang)}" style="padding: 1px 5px; font-size: 0.75rem;" type="button">
+                        <button class="btn btn-sm btn-outline btn-edit-comm" data-edit-comm-id="${escapeHtml(comm.id)}" title="${t('btnEditCommentary', lang)}" style="padding: 1px 5px; font-size: 0.75rem;" type="button">
                           ✏️
                         </button>
-                        <button class="btn btn-sm btn-danger btn-del-comm" data-del-comm-id="${comm.id}" title="${t('btnDeleteCommentary', lang)}" style="padding: 1px 5px; font-size: 0.75rem;" type="button">
+                        <button class="btn btn-sm btn-danger btn-del-comm" data-del-comm-id="${escapeHtml(comm.id)}" title="${t('btnDeleteCommentary', lang)}" style="padding: 1px 5px; font-size: 0.75rem;" type="button">
                           🗑️
                         </button>
                       </div>
@@ -1407,14 +1476,14 @@ export class SanskritEditorElement extends HTMLElement {
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.4rem;">
           <div style="display: flex; align-items: baseline; gap: 0.5rem;">
             <strong class="deva-font" style="font-size: 1.25rem; color: var(--accent-gold-dark);">
-              ${tk.text.devanagari}
+              ${escapeHtml(tk.text.devanagari)}
             </strong>
             <span style="font-style: italic; font-size: 0.95rem; color: var(--text-primary); font-weight: 600;">
-              ${tk.text.iast}
+              ${escapeHtml(tk.text.iast)}
             </span>
           </div>
           <span style="font-size: 0.75rem; background: ${gAnalysis.categoryColor}20; color: ${gAnalysis.categoryColor}; border: 1px solid ${gAnalysis.categoryColor}; padding: 2px 8px; border-radius: 12px; font-weight: 700;">
-            ${gAnalysis.fullLabel}
+            ${escapeHtml(gAnalysis.fullLabel)}
           </span>
         </div>
 
@@ -1427,8 +1496,8 @@ export class SanskritEditorElement extends HTMLElement {
               .map(
                 (d) => `
               <div class="cat-grammar-tag">
-                <span class="tag-title">${d.title}:</span>
-                <span class="tag-value">${d.value}</span>
+                <span class="tag-title">${escapeHtml(d.title)}:</span>
+                <span class="tag-value">${escapeHtml(d.value)}</span>
               </div>`
               )
               .join('')}
@@ -1440,34 +1509,34 @@ export class SanskritEditorElement extends HTMLElement {
         <div class="editor-grid-3" style="margin-top: 0.6rem;">
           <label>
             Kmen / Lemma (pro slovník):
-            <input type="text" id="edit-token-lemma" value="${tk.lemma || ''}" class="form-input">
+            <input type="text" id="edit-token-lemma" value="${escapeHtml(tk.lemma || '')}" class="form-input">
           </label>
           <label>
             Gramatika (vlastní poznámka):
-            <input type="text" id="edit-token-grammar" value="${tk.grammar?.label_cs || ''}" class="form-input">
+            <input type="text" id="edit-token-grammar" value="${escapeHtml(tk.grammar?.label_cs || '')}" class="form-input">
           </label>
           <label>
             Kontextový význam:
-            <input type="text" id="edit-token-meaning" value="${csContext}" class="form-input">
+            <input type="text" id="edit-token-meaning" value="${escapeHtml(csContext)}" class="form-input">
           </label>
         </div>
 
         <!-- Lemma-Based Dictionary Lookup Links -->
         <div class="cat-dictionary-lemma-bar" style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed var(--bg-card-border);">
           <div style="font-size: 0.78rem; font-weight: 700; color: var(--accent-gold-dark); margin-bottom: 0.35rem;">
-            🔍 ${t('dictLookupTitle', lang)}: <code>${lemma}</code>
+            🔍 ${t('dictLookupTitle', lang)}: <code>${escapeHtml(lemma)}</code>
           </div>
           <div class="dict-btn-grid" style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
-            <a href="${mwUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
+            <a href="${escapeHtml(mwUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
               📖 Monier-Williams
             </a>
-            <a href="${apteUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
+            <a href="${escapeHtml(apteUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
               📖 V. S. Apte
             </a>
-            <a href="${wisdomUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
+            <a href="${escapeHtml(wisdomUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
               🌐 WisdomLib
             </a>
-            <a href="${ambudaUrl}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
+            <a href="${escapeHtml(ambudaUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
               ⚡ Ambuda
             </a>
           </div>
@@ -1493,7 +1562,7 @@ export class SanskritEditorElement extends HTMLElement {
     return `
       <div class="alignment-words-container">
         <div style="font-size: 0.85rem; margin-bottom: 0.4rem;">
-          Slova v překladu (klikněte pro přiřazení k <strong>${activeToken?.text.devanagari || ''}</strong>):
+          Slova v překladu (klikněte pro přiřazení k <strong>${escapeHtml(activeToken?.text.devanagari || '')}</strong>):
         </div>
         <div class="alignment-pills-flow">
           ${words
@@ -1514,12 +1583,12 @@ export class SanskritEditorElement extends HTMLElement {
                 badge = ' ✓';
               } else if (otherBound) {
                 pillClass += ' bound-other';
-                badge = ` [${otherBound.text.devanagari}]`;
+                badge = ` [${escapeHtml(otherBound.text.devanagari)}]`;
               }
 
               return `
-                <button class="${pillClass}" data-align-word="${w}">
-                  ${w}${badge}
+                <button class="${pillClass}" data-align-word="${escapeHtml(w)}">
+                  ${escapeHtml(w)}${badge}
                 </button>
               `;
             })
@@ -1529,16 +1598,45 @@ export class SanskritEditorElement extends HTMLElement {
     `;
   }
 
+  /** Language of the translation currently being edited (falls back to the UI language). */
+  private getActiveTranslationLang(): string {
+    return this._verse?.translations.find((t) => t.id === this._activeTranslationId)?.lang || this._uiLang;
+  }
+
   private getGlossarySuggestions(): TranslationSuggestion[] {
-    if (!this._document || !this._verse || !this._selectedTokenId) {
+    if (!this._verse || !this._selectedTokenId) {
       return [];
     }
     const token = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
     if (!token) return [];
 
-    const query = token.lemma || token.text.iast;
-    const allSuggestions = getTranslationSuggestions(this._document.verses, query, 'cs');
-    return allSuggestions.slice(0, 5);
+    const lang = this.getActiveTranslationLang();
+    const query = (token.lemma || token.text.iast).replace(/^√/, '');
+    const keys = [query, token.text.iast].map((k) => sanitizeSearchLemma(k).toLowerCase());
+
+    // 1. Project glossary terms (explicitly curated, therefore listed first)
+    const fromGlossary: TranslationSuggestion[] = [];
+    for (const entry of Object.values(this._glossary)) {
+      const stem = sanitizeSearchLemma(entry.stem).toLowerCase();
+      if (!stem || !keys.some((k) => k === stem || (stem.length >= 3 && k.startsWith(stem)))) continue;
+      const translation = lang === 'en' ? (entry.translationEn || entry.translationCs) : (entry.translationCs || entry.translationEn);
+      if (!translation) continue;
+      fromGlossary.push({
+        targetWord: entry.stem,
+        translation,
+        verseNumber: lang === 'cs' ? 'glosář' : 'glossary',
+        verseId: '',
+        lang,
+        frequency: 100
+      });
+    }
+
+    // 2. Earlier translations of the same word elsewhere in the book
+    const fromCorpus = this._document
+      ? getTranslationSuggestions(this._document.verses, query, lang)
+      : [];
+    const seen = new Set(fromGlossary.map((g) => g.translation.toLowerCase()));
+    return [...fromGlossary, ...fromCorpus.filter((c) => !seen.has(c.translation.toLowerCase()))].slice(0, 6);
   }
 
   private getSurroundingVerses(): { prev: Verse | null; next: Verse | null } {
@@ -1571,7 +1669,7 @@ export class SanskritEditorElement extends HTMLElement {
           <div class="editor-card">
             <h4 class="editor-card-title">${t('bookHierarchyTitle', lang)}</h4>
             <div style="margin-bottom: 0.75rem;">
-              <input type="text" id="input-corpus-filter" value="${this._corpusFilterText}" placeholder="${t('searchBookPlaceholder', lang)}" class="form-input">
+              <input type="text" id="input-corpus-filter" value="${escapeHtml(this._corpusFilterText)}" placeholder="${t('searchBookPlaceholder', lang)}" class="form-input">
             </div>
 
             <div class="hierarchy-tree-box">
@@ -1579,21 +1677,21 @@ export class SanskritEditorElement extends HTMLElement {
                 .map(
                   (b) => `
                 <div class="hierarchy-book-node">
-                  <div class="book-node-title">📖 ${b.book} <span class="badge">(${b.totalVerses} veršů)</span></div>
+                  <div class="book-node-title">📖 ${escapeHtml(b.book)} <span class="badge">(${b.totalVerses} veršů)</span></div>
                   <div class="chapters-list">
                     ${b.chapters
                       .map(
                         (ch) => `
                       <div class="chapter-node">
-                        <div class="chapter-node-title">🔖 ${ch.chapter} (${ch.verses.length})</div>
+                        <div class="chapter-node-title">🔖 ${escapeHtml(ch.chapter)} (${ch.verses.length})</div>
                         <div class="verse-pills-row">
                           ${ch.verses
                             .map((v) => {
                               const s = this._verseStatuses[v.id] || v.translationStatus || 'draft';
                               const dot = s === 'verified' ? '🟢' : s === 'translated' ? '🔵' : s === 'in_review' ? '🟡' : '⚪';
                               return `
-                              <button class="verse-chip ${this._verse?.id === v.id ? 'active' : ''}" data-select-verse-id="${v.id}">
-                                ${dot} ${v.number}
+                              <button class="verse-chip ${this._verse?.id === v.id ? 'active' : ''}" data-select-verse-id="${escapeHtml(v.id)}">
+                                ${dot} ${escapeHtml(v.number)}
                               </button>`;
                             })
                             .join('')}
@@ -1634,11 +1732,11 @@ export class SanskritEditorElement extends HTMLElement {
             <div class="editor-grid-2" style="margin-bottom: 0.6rem;">
               <label>
                 ${t('bookNameLabel', lang)}:
-                <input type="text" id="bulk-import-book" placeholder="např. Bhagavadgītā" value="${this._verse?.book || ''}" class="form-input">
+                <input type="text" id="bulk-import-book" placeholder="např. Bhagavadgītā" value="${escapeHtml(this._verse?.book || '')}" class="form-input">
               </label>
               <label>
                 ${t('chapterNameLabel', lang)}:
-                <input type="text" id="bulk-import-chapter" placeholder="např. 1. Kapitola" value="${this._verse?.chapter || ''}" class="form-input">
+                <input type="text" id="bulk-import-chapter" placeholder="např. 1. Kapitola" value="${escapeHtml(this._verse?.chapter || '')}" class="form-input">
               </label>
             </div>
 
@@ -1691,18 +1789,18 @@ export class SanskritEditorElement extends HTMLElement {
                   (c) => `
                 <div class="concordance-item-card">
                   <div style="display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 0.3rem;">
-                    <button class="verse-num-badge" data-select-verse-id="${c.verseId}">
-                      ${c.book ? `${c.book} ` : ''}Verš ${c.verseNumber} &rarr;
+                    <button class="verse-num-badge" data-select-verse-id="${escapeHtml(c.verseId)}">
+                      ${c.book ? `${escapeHtml(c.book)} ` : ''}Verš ${escapeHtml(c.verseNumber)} &rarr;
                     </button>
                     <span style="font-size: 0.8rem; color: var(--accent-gold-dark); font-weight: 600;">
-                      ${c.token.devanagari} (${c.token.iast})
+                      ${escapeHtml(c.token.devanagari)} (${escapeHtml(c.token.iast)})
                     </span>
                   </div>
-                  <div class="concordance-context-deva deva-font">${c.contextDevanagari}</div>
-                  <div class="concordance-context-iast">${c.contextIast}</div>
+                  <div class="concordance-context-deva deva-font">${escapeHtml(c.contextDevanagari)}</div>
+                  <div class="concordance-context-iast">${escapeHtml(c.contextIast)}</div>
                   ${
                     c.translations.length > 0
-                      ? `<div class="concordance-trans">${c.translations.join(' | ')}</div>`
+                      ? `<div class="concordance-trans">${escapeHtml(c.translations.join(' | '))}</div>`
                       : ''
                   }
                 </div>`
@@ -1737,22 +1835,22 @@ export class SanskritEditorElement extends HTMLElement {
                     .map(
                       (entry) => `
                     <tr>
-                      <td><strong>${entry.lemma}</strong></td>
-                      <td class="deva-font" style="font-size: 1.1rem; color: var(--accent-gold-dark);">${entry.devanagari}</td>
+                      <td><strong>${escapeHtml(entry.lemma)}</strong></td>
+                      <td class="deva-font" style="font-size: 1.1rem; color: var(--accent-gold-dark);">${escapeHtml(entry.devanagari)}</td>
                       <td>
                         <div class="index-occ-chips">
                           ${entry.occurrences
                             .map(
                               (occ) => `
-                            <button class="occ-chip" data-select-verse-id="${occ.verseId}">
-                              ${occ.verseNumber}
+                            <button class="occ-chip" data-select-verse-id="${escapeHtml(occ.verseId)}">
+                              ${escapeHtml(occ.verseNumber)}
                             </button>`
                             )
                             .join('')}
                         </div>
                       </td>
-                      <td>${entry.meanings.join(', ') || '—'}</td>
-                      <td><em style="color: var(--accent-terracotta);">${entry.translationsUsed.join(', ') || '—'}</em></td>
+                      <td>${escapeHtml(entry.meanings.join(', ') || '—')}</td>
+                      <td><em style="color: var(--accent-terracotta);">${escapeHtml(entry.translationsUsed.join(', ') || '—')}</em></td>
                     </tr>`
                     )
                     .join('')}
@@ -1853,7 +1951,7 @@ export class SanskritEditorElement extends HTMLElement {
         customSystemPrompt: customPrompt
       });
 
-      alert(this._uiLang === 'cs' ? 'Nastavení modelu bylo úspěšně uloženo.' : 'Model settings saved successfully.');
+      this.notify(this._uiLang === 'cs' ? 'Nastavení modelu bylo úspěšně uloženo.' : 'Model settings saved successfully.');
       this.render();
     });
 
@@ -1880,53 +1978,60 @@ export class SanskritEditorElement extends HTMLElement {
     // Apply Translation
     const btnApplyTrans = this.querySelector('#btn-llm-apply-translation');
     btnApplyTrans?.addEventListener('click', () => {
-      if (!this._verse || !this._llmLastResult?.data) return;
-      this.verse = applyTranslationToVerse(this._verse, this._llmLastResult.data, this._llmConfig.targetLanguage);
-      this.saveCurrentVerse();
-      this.render();
-      alert(this._uiLang === 'cs' ? 'Překlad byl úspěšně aplikován do verše.' : 'Translation applied to verse.');
+      const res = this.currentLLMResult();
+      if (!this._verse || !res?.data) return;
+      const targetLang = this._llmConfig.targetLanguage;
+      const active = this._verse.translations.find((t) => t.id === this._activeTranslationId);
+      this.verse = applyTranslationToVerse(this._verse, res.data, targetLang, {
+        translationId: active && active.lang === targetLang && active.type === 'fluent' ? active.id : undefined,
+        model: res.modelUsed
+      });
+      this.saveCurrentVerse(false);
+      this.notify(this._uiLang === 'cs' ? 'Překlad byl úspěšně aplikován do verše.' : 'Translation applied to verse.');
     });
 
     // Apply Word Alignments
     const btnApplyAlignments = this.querySelector('#btn-llm-apply-alignments');
     btnApplyAlignments?.addEventListener('click', () => {
-      if (!this._verse || !this._llmLastResult?.data) return;
-      this.verse = applyAlignmentsToVerse(this._verse, this._llmLastResult.data, this._llmConfig.targetLanguage);
-      this.saveCurrentVerse();
-      this.render();
-      alert(this._uiLang === 'cs' ? 'Párování slov bylo úspěšně uloženo do tokenů verše.' : 'Word alignments saved to verse tokens.');
+      const res = this.currentLLMResult();
+      if (!this._verse || !res?.data) return;
+      // Alignments are keyed by the translation the LLM was asked about (the active one)
+      this.verse = applyAlignmentsToVerse(this._verse, res.data, this._activeTranslationId);
+      this.saveCurrentVerse(false);
+      this.notify(this._uiLang === 'cs' ? 'Párování slov bylo úspěšně uloženo do tokenů verše.' : 'Word alignments saved to verse tokens.');
     });
 
     // Apply Grammar Corrections
     const btnApplyGrammar = this.querySelector('#btn-llm-apply-grammar');
     btnApplyGrammar?.addEventListener('click', () => {
-      if (!this._verse || !this._llmLastResult?.data) return;
-      this.verse = applyGrammarCorrectionsToVerse(this._verse, this._llmLastResult.data);
-      this.saveCurrentVerse();
-      this.render();
-      alert(this._uiLang === 'cs' ? 'Gramatické a Sandhi opravy byly úspěšně uplatněny na tokenech verše.' : 'Grammar corrections applied to verse tokens.');
+      const res = this.currentLLMResult();
+      if (!this._verse || !res?.data) return;
+      this.verse = applyGrammarCorrectionsToVerse(this._verse, res.data);
+      this.saveCurrentVerse(false);
+      this.notify(this._uiLang === 'cs' ? 'Gramatické a Sandhi opravy byly úspěšně uplatněny na tokenech verše.' : 'Grammar corrections applied to verse tokens.');
     });
 
     // Insert Commentary
     const btnInsertCommentary = this.querySelector('#btn-llm-insert-commentary');
     btnInsertCommentary?.addEventListener('click', () => {
-      if (!this._verse || !this._llmLastResult?.data?.commentary) return;
-      const comm = this._llmLastResult.data.commentary;
+      const res = this.currentLLMResult();
+      if (!this._verse || !res?.data?.commentary) return;
+      const comm = res.data.commentary;
       if (!this._verse.commentaries) {
         this._verse.commentaries = getVerseCommentaries(this._verse);
       }
       this._verse.commentaries.push({
         id: `comm_llm_${Date.now()}`,
-        author: 'AI / LLM Asistent',
+        author: res.modelUsed ? `LLM (${res.modelUsed})` : 'AI / LLM Asistent',
         tradition: 'Syntéza komentářů',
         title: 'Výklad verše',
-        lang: this._uiLang,
+        lang: this._llmConfig.targetLanguage || this._uiLang,
         text: comm,
         isOriginalSanskrit: false
       });
-      this.saveCurrentVerse();
+      this.saveCurrentVerse(false);
       this.render();
-      alert(this._uiLang === 'cs' ? 'Komentář byl úspěšně přidán do seznamu výkladů verše.' : 'Commentary successfully added to verse exegesis.');
+      this.notify(this._uiLang === 'cs' ? 'Komentář byl úspěšně přidán do seznamu výkladů verše.' : 'Commentary successfully added to verse exegesis.');
     });
 
     // Translation Status Picker
@@ -2024,10 +2129,10 @@ export class SanskritEditorElement extends HTMLElement {
     // Attach IME to Devanagari textarea
     const devaTextarea = this.querySelector('#edit-verse-devanagari') as HTMLTextAreaElement;
     if (devaTextarea) {
-      if (this._imeController) {
-        this._imeController.destroy();
-      }
-      this._imeController = attachDevanagariIME(devaTextarea, false);
+      // Preserve the on/off state across re-renders (the textarea is recreated by render())
+      const wasEnabled = this._imeController?.isEnabled() ?? false;
+      this._imeController?.destroy();
+      this._imeController = attachDevanagariIME(devaTextarea, wasEnabled);
 
       const btnToggleIme = this.querySelector('#btn-toggle-ime');
       btnToggleIme?.addEventListener('click', () => {
@@ -2206,7 +2311,7 @@ export class SanskritEditorElement extends HTMLElement {
         translationCs: transCs || '',
         translationEn: transEn || ''
       };
-      alert(`Termín „${stem}“ byl úspěšně uložen do projektového glosáře.`);
+      this.notify(`Termín „${stem}“ byl úspěšně uložen do projektového glosáře.`);
       this.render();
     });
 
@@ -2230,7 +2335,7 @@ export class SanskritEditorElement extends HTMLElement {
       if (!this._verse) return;
       const trans = this._verse.translations.find((t) => t.id === this._activeTranslationId);
       if (trans && trans.text) {
-        autoSuggestBindings(this._verse.tokens, this._activeTranslationId, trans.text);
+        autoSuggestBindings(this._verse.tokens, this._activeTranslationId, trans.text, trans.lang);
         this.render();
       }
     });
@@ -2287,7 +2392,7 @@ export class SanskritEditorElement extends HTMLElement {
         }
         saveWorkspaceBundleToCache(bundle);
         this.render();
-        alert(`Projekt „${bundle.projectTitle}“ byl úspěšně obnoven ze souboru.`);
+        this.notify(`Projekt „${bundle.projectTitle}“ byl úspěšně obnoven ze souboru.`);
         this.dispatchEvent(new CustomEvent('project-loaded', { detail: { bundle } }));
       } catch (err: any) {
         alert('Chyba při načítání projektu: ' + err.message);
@@ -2312,9 +2417,9 @@ export class SanskritEditorElement extends HTMLElement {
       const reader = new FileReader();
       reader.onload = (re) => {
         try {
-          const parsed = JSON.parse(re.target?.result as string);
+          const parsed = VerseSchema.parse(JSON.parse(re.target?.result as string));
           this.verse = parsed;
-          alert('Verš byl úspěšně načten z JSON.');
+          this.notify('Verš byl úspěšně načten z JSON.');
         } catch (err) {
           alert('Chyba při čtení JSON: ' + (err as Error).message);
         }
@@ -2325,8 +2430,16 @@ export class SanskritEditorElement extends HTMLElement {
     // Corpus tab filter
     const filterInput = this.querySelector('#input-corpus-filter') as HTMLInputElement;
     filterInput?.addEventListener('input', (e) => {
-      this._corpusFilterText = (e.target as HTMLInputElement).value;
+      const input = e.target as HTMLInputElement;
+      this._corpusFilterText = input.value;
+      const caret = input.selectionStart ?? input.value.length;
       this.render();
+      // render() replaces the DOM; restore focus and caret so typing can continue
+      const fresh = this.querySelector('#input-corpus-filter') as HTMLInputElement | null;
+      if (fresh) {
+        fresh.focus();
+        fresh.setSelectionRange(caret, caret);
+      }
     });
 
     // Select verse from hierarchy or concordance chip
@@ -2353,10 +2466,14 @@ export class SanskritEditorElement extends HTMLElement {
         return;
       }
 
+      // Number new verses after the ones already in the same book & chapter
+      const sameChapter = (this._document?.verses || []).filter((v) =>
+        (v.book || '').trim() === (bookName || '').trim() && (v.chapter || '').trim() === (chapName || '').trim()
+      );
       const importedVerses = bulkImportText(rawText, {
         book: bookName,
         chapter: chapName,
-        startNumber: (this._document?.verses.length || 0) + 1
+        startNumber: sameChapter.length + 1
       });
 
       if (importedVerses.length === 0) {
@@ -2368,8 +2485,7 @@ export class SanskritEditorElement extends HTMLElement {
         this._document = {
           document: {
             id: `doc_${Date.now()}`,
-            title: bookName || 'Bhagavadgītā',
-            author: 'Vyāsa',
+            title: bookName || (this._uiLang === 'cs' ? 'Nový dokument' : 'New document'),
             status: 'draft',
             defaultLayers: ['devanagari', 'transliteration', 'translation']
           },
@@ -2381,7 +2497,7 @@ export class SanskritEditorElement extends HTMLElement {
       this._activeTab = 'edit';
       this.render();
       this.dispatchEvent(new CustomEvent('document-change', { detail: { document: this._document } }));
-      alert(`Úspěšně importováno ${importedVerses.length} veršů!`);
+      this.notify(this._uiLang === 'cs' ? `Úspěšně importováno ${importedVerses.length} veršů.` : `Imported ${importedVerses.length} verses.`);
     });
 
     // Export subsets
@@ -2426,7 +2542,7 @@ export class SanskritEditorElement extends HTMLElement {
     const btnGenIndex = this.querySelector('#btn-generate-full-index');
     btnGenIndex?.addEventListener('click', () => {
       if (!this._document) return;
-      this._indexVerborum = generateIndexVerborum(this._document.verses, 'cs');
+      this._indexVerborum = generateIndexVerborum(this._document.verses, this.getActiveTranslationLang());
       this.render();
     });
 
@@ -2574,9 +2690,9 @@ export class SanskritEditorElement extends HTMLElement {
             this._verse.commentaries = getVerseCommentaries(this._verse);
           }
           this._verse.commentaries = this._verse.commentaries.filter((c) => c.id !== commId);
-          if (this._verse.commentary_cs && commId.includes('cs')) {
-            this._verse.commentary_cs = undefined;
-          }
+          // Legacy single-text fields would reappear through getVerseCommentaries() once the list is empty
+          this._verse.commentary_cs = undefined;
+          this._verse.commentary_by_lang = undefined;
           this.saveCurrentVerse();
           this.render();
         }
@@ -2648,7 +2764,7 @@ export class SanskritEditorElement extends HTMLElement {
   }
 
   private saveCurrentVerseAndAdvance() {
-    this.saveCurrentVerse();
+    this.saveCurrentVerse(false);
     this.navigateVerse(1);
   }
 
@@ -2658,24 +2774,7 @@ export class SanskritEditorElement extends HTMLElement {
 
     const bundle = createWorkspaceBundle(
       this._document,
-      {
-        version: '2.0.0',
-        layers: {
-          devanagari: { visible: true, version: 'standard' },
-          transliteration: { visible: true, version: 'iast' },
-          translation: { visible: true, activeLang: 'cs', activeTypes: ['fluent'] },
-          meter: { visible: true, showAksharas: true }
-        },
-        theme: 'parchment',
-        uiLanguage: this._uiLang,
-        czechRules: createCzechRules(),
-        defaultDictionary: 'cologne_mw',
-        preserveManualEdits: true,
-        fontSizeDevanagari: 24,
-        fontSizeTransliteration: 16,
-        fontFamilyDevanagari: 'Tiro Devanagari Sanskrit, Noto Serif Devanagari, serif',
-        autoSaveToLocalStorage: true
-      },
+      AppSettingsSchema.parse({ uiLanguage: this._uiLang }),
       this._verse?.id || '',
       this._glossary,
       this._verseStatuses
@@ -2683,7 +2782,7 @@ export class SanskritEditorElement extends HTMLElement {
 
     saveWorkspaceBundleToCache(bundle);
     downloadWorkspaceBundle(bundle);
-    alert('Kompletní projektový soubor (.sanskrit-project.json) byl úspěšně uložen na disk!');
+    this.notify(this._uiLang === 'cs' ? 'Projektový soubor (.sanskrit-project.json) byl uložen.' : 'Project file (.sanskrit-project.json) saved.');
   }
 
   private autoSplitAndLemmatize() {
@@ -2692,61 +2791,40 @@ export class SanskritEditorElement extends HTMLElement {
       ? this._verse.scripts.iast
       : this._verse.scripts.iast.text;
 
-    const words = iast
-      .replace(/[।॥|0-9०-९.,!?;:[\]()]/g, ' ')
-      .trim()
-      .split(/\s+/)
-      .filter((w) => w.length > 0);
+    const oldTokens = this._verse.tokens;
+    const hasCuratedData = oldTokens.some((tk) =>
+      Object.values(tk.alignment?.matched_words || {}).some((w) => w.length > 0) || tk.vocabulary
+    );
+    if (hasCuratedData && !confirm(this._uiLang === 'cs'
+      ? 'Slova verše budou znovu rozdělena. Významy a párování se zachovají u slov, která zůstanou stejná. Pokračovat?'
+      : 'The verse will be re-tokenized. Meanings and alignments are kept for words that stay the same. Continue?')) {
+      return;
+    }
 
-    const tokens: Token[] = words.map((w, idx) => {
-      let wordDeva = '';
-      try {
-        wordDeva = transliterateLipi(w, 'Iast', 'Devanagari');
-      } catch {
-        wordDeva = defaultSanskritAdapter.transliterate(w, 'iast', 'devanagari');
-      }
+    // Carry curated data over to new tokens with the same IAST form (in order of appearance)
+    const pool = new Map<string, Token[]>();
+    for (const tk of oldTokens) {
+      const key = tk.text.iast.toLowerCase();
+      pool.set(key, [...(pool.get(key) || []), tk]);
+    }
 
-      const morphs = analyzeSanskritWord(w);
-      const firstMorph = morphs[0];
-
+    const tokens: Token[] = createTokensFromIast(iast, 't').map((fresh) => {
+      const previous = pool.get(fresh.text.iast.toLowerCase())?.shift();
+      if (!previous) return fresh;
       return {
-        id: `t_${idx + 1}`,
-        text: {
-          devanagari: wordDeva,
-          iast: w,
-          cs_phonetic: defaultSanskritAdapter.transliterate(wordDeva, 'devanagari', 'cs_phonetic')
-        },
-        lemma: firstMorph?.lemma || w.toLowerCase(),
-        grammar: firstMorph ? {
-          pos: firstMorph.pos,
-          case: firstMorph.case,
-          number: firstMorph.number,
-          gender: firstMorph.gender,
-          root: firstMorph.root,
-          stem: firstMorph.stem,
-          person: firstMorph.person,
-          tense: firstMorph.tense,
-          voice: firstMorph.voice,
-          label_cs: firstMorph.label_cs,
-          label_en: firstMorph.label_en
-        } : undefined,
-        vocabulary: firstMorph ? {
-          meanings_by_lang: {
-            cs: { contextual: firstMorph.label_cs, alternatives: [] },
-            en: { contextual: firstMorph.label_en, alternatives: [] }
-          },
-          contextual_meaning_cs: firstMorph.label_cs
-        } : undefined,
-        alignment: {
-          matched_words: {}
-        }
+        ...fresh,
+        lemma: previous.lemma || fresh.lemma,
+        grammar: previous.grammar || fresh.grammar,
+        vocabulary: previous.vocabulary || fresh.vocabulary,
+        compound: previous.compound,
+        sandhi_note: previous.sandhi_note,
+        dictionaryLookup: previous.dictionaryLookup,
+        alignment: previous.alignment || fresh.alignment
       };
     });
 
     this._verse.tokens = tokens;
-    if (tokens.length > 0) {
-      this._selectedTokenId = tokens[0].id;
-    }
+    this._selectedTokenId = tokens[0]?.id ?? null;
     this.render();
   }
 
@@ -2762,17 +2840,7 @@ export class SanskritEditorElement extends HTMLElement {
 
     const found = this._document.verses.find((v) => v.id === verseId);
     if (found) {
-      this._verse = JSON.parse(JSON.stringify(found));
-      if (this._verse) {
-        if (!this._verse.commentaries || this._verse.commentaries.length === 0) {
-          this._verse.commentaries = getVerseCommentaries(this._verse);
-        }
-        if (this._verse.tokens.length > 0) {
-          this._selectedTokenId = this._verse.tokens[0].id;
-        }
-      }
-      this._editingCommentaryId = null;
-      this._showAddCommentaryForm = false;
+      this.adoptVerse(found);
       this.render();
       this.dispatchEvent(new CustomEvent('verse-selected', { detail: { verse: this._verse } }));
     }
@@ -2809,7 +2877,7 @@ export class SanskritEditorElement extends HTMLElement {
     this.verse = newV;
   }
 
-  private saveCurrentVerse() {
+  private saveCurrentVerse(announce = true) {
     if (!this._verse || !this._document) return;
 
     this.syncInputsToVerse();
@@ -2821,18 +2889,10 @@ export class SanskritEditorElement extends HTMLElement {
     }
 
     this.dispatchEvent(new CustomEvent('verse-saved', { detail: { verse: this._verse } }));
-    alert(`Verš ${this._verse.number} byl úspěšně uložen.`);
+    if (announce) {
+      this.notify(this._uiLang === 'cs' ? `Verš ${this._verse.number} byl úspěšně uložen.` : `Verse ${this._verse.number} saved.`);
+    }
   }
-}
-
-function escapeHtml(str: string): string {
-  if (!str) return '';
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#039;');
 }
 
 function downloadFile(filename: string, content: string, mimeType: string) {
@@ -2855,3 +2915,6 @@ export function registerSanskritEditor(): void {
     customElements.define('sanskrit-editor', SanskritEditorElement);
   }
 }
+
+// Auto-register in browser/DOM environments (like <sanskrit-reader> and <sanskrit-verse>)
+registerSanskritEditor();

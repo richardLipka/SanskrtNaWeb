@@ -1,5 +1,4 @@
 import { transliterateLipi } from '../lemmatizer/vidyutAdapter.ts';
-import { defaultSanskritAdapter } from '../adapters/sanskritAdapter.ts';
 
 /**
  * Inserts a string at the current cursor position of an input or textarea element,
@@ -101,21 +100,21 @@ export const PANINIAN_SECTIONS: PaninianKeyboardSection[] = [
     ]
   },
   {
-    title: 'Ṭa-varga (Dásňové / Mūrdhanya)',
+    title: 'Ṭa-varga (Cerebrální / Mūrdhanya)',
     category: 'consonants',
     items: [
       { char: 'ट' }, { char: 'ठ' }, { char: 'ड' }, { char: 'ढ' }, { char: 'ण' }
     ]
   },
   {
-    title: 'Ta-varga (Zubné / Dantya)',
+    title: 'Ta-varga (Zubní / Dantya)',
     category: 'consonants',
     items: [
       { char: 'त' }, { char: 'थ' }, { char: 'द' }, { char: 'ध' }, { char: 'न' }
     ]
   },
   {
-    title: 'Pa-varga (Retné / Oṣṭhya)',
+    title: 'Pa-varga (Retní / Oṣṭhya)',
     category: 'consonants',
     items: [
       { char: 'प' }, { char: 'फ' }, { char: 'ब' }, { char: 'भ' }, { char: 'म' }
@@ -159,61 +158,109 @@ export interface IMEController {
 }
 
 /**
- * Attaches a live Latin -> Devanāgarī IME to a target textarea or input element.
- * When enabled, typing Latin characters (IAST or Harvard-Kyoto) transliterates
- * the active word buffer to Devanāgarī dynamically.
+ * Attaches a live Latin (IAST) -> Devanāgarī IME to a target textarea or input element.
+ *
+ * The Latin letters of the word being typed are kept in a buffer and the whole buffer is
+ * re-transliterated after every keystroke, so "y", "yo", "yog", "yoga" become
+ * य् → यो → योग् → योग (instead of transliterating each letter in isolation).
+ * Backspace removes the last Latin letter of the buffer. Typing "|" produces a daṇḍa (।),
+ * a second "|" turns it into a double daṇḍa (॥). Any other input, a click or cursor
+ * movement ends the current word.
  */
 export function attachDevanagariIME(
   target: HTMLInputElement | HTMLTextAreaElement,
   initiallyEnabled = false
 ): IMEController {
   let enabled = initiallyEnabled;
-  let isComposing = false;
+  let dispatching = false;
+  let buffer = '';
+  let spanStart = -1;
+  let spanLength = 0;
+
+  const LATIN_LETTER = /^[a-zA-ZāīūṛṝḷḹṅñṭḍṇśṣṃṁḥĀĪŪṚṜḶḸṄÑṬḌṆŚṢṂṀḤ']$/;
+
+  const reset = () => {
+    buffer = '';
+    spanStart = -1;
+    spanLength = 0;
+  };
+
+  const notify = () => {
+    dispatching = true;
+    try {
+      target.dispatchEvent(new Event('input', { bubbles: true }));
+    } finally {
+      dispatching = false;
+    }
+  };
+
+  /** Replaces [spanStart, removeEnd) with the transliterated buffer and places the caret after it. */
+  const renderBuffer = (removeEnd: number) => {
+    const deva = buffer ? transliterateLipi(buffer, 'iast', 'devanagari') : '';
+    const value = target.value;
+    target.value = value.slice(0, spanStart) + deva + value.slice(removeEnd);
+    spanLength = deva.length;
+    const caret = spanStart + deva.length;
+    target.setSelectionRange(caret, caret);
+    if (!buffer) reset();
+    notify();
+  };
 
   function onInput(e: Event) {
-    if (!enabled || isComposing) return;
-
-    // Check if input was text insertion
+    if (!enabled || dispatching) return;
     const inputEvt = e as InputEvent;
-    if (inputEvt.inputType && !inputEvt.inputType.startsWith('insert')) {
+    if (inputEvt.isComposing) return; // the OS input method is active
+
+    const pos = target.selectionStart ?? target.value.length;
+    const data = inputEvt.data ?? '';
+
+    // Letter typed: extend (or start) the word being composed
+    if (inputEvt.inputType === 'insertText' && data.length === 1 && LATIN_LETTER.test(data)) {
+      const insertedAt = pos - 1;
+      if (spanStart >= 0 && insertedAt === spanStart + spanLength) {
+        buffer += data;
+      } else {
+        buffer = data;
+        spanStart = insertedAt;
+        spanLength = 0;
+      }
+      // Remove the raw Latin letter, then rewrite the composed span
+      target.value = target.value.slice(0, insertedAt) + target.value.slice(pos);
+      renderBuffer(spanStart + spanLength);
       return;
     }
 
-    const cursorPos = target.selectionStart ?? target.value.length;
-    const textBefore = target.value.slice(0, cursorPos);
-    const textAfter = target.value.slice(cursorPos);
-
-    // Find the current Latin word boundary immediately preceding cursor
-    const wordMatch = textBefore.match(/([a-zA-ZāīūṛṝḷḹṅñṭḍṇśṣṃḥĀĪŪṚṄÑṬḌṆŚṢṂḤ|.]+)\s*$/);
-    if (!wordMatch || !wordMatch[1]) {
+    // Daṇḍa shortcuts
+    if (inputEvt.inputType === 'insertText' && data === '|') {
+      const before = target.value.slice(0, pos - 1);
+      const after = target.value.slice(pos);
+      const doubled = before.endsWith('।');
+      target.value = doubled ? `${before.slice(0, -1)}॥${after}` : `${before}।${after}`;
+      const caret = doubled ? pos - 1 : pos;
+      target.setSelectionRange(caret, caret);
+      reset();
+      notify();
       return;
     }
 
-    const latinWord = wordMatch[1];
-    // Do not transliterate if it is only a danda or whitespace
-    if (latinWord.trim().length === 0) return;
-
-    let devanagariWord = '';
-    try {
-      devanagariWord = transliterateLipi(latinWord, 'Iast', 'Devanagari');
-    } catch {
-      devanagariWord = defaultSanskritAdapter.transliterate(latinWord, 'iast', 'devanagari');
+    // Backspace inside the composed word: drop the last Latin letter instead of one code unit
+    if (inputEvt.inputType === 'deleteContentBackward' && buffer && spanStart >= 0 && pos === spanStart + spanLength - 1) {
+      buffer = buffer.slice(0, -1);
+      renderBuffer(pos);
+      return;
     }
 
-    if (devanagariWord && devanagariWord !== latinWord) {
-      isComposing = true;
-      const wordStart = cursorPos - latinWord.length;
-      target.value = target.value.slice(0, wordStart) + devanagariWord + textAfter;
-      const newPos = wordStart + devanagariWord.length;
-      target.setSelectionRange(newPos, newPos);
-      isComposing = false;
-
-      // Dispatch change notifications
-      target.dispatchEvent(new Event('input', { bubbles: true }));
-    }
+    reset();
   }
 
   target.addEventListener('input', onInput);
+  target.addEventListener('mousedown', reset);
+  target.addEventListener('blur', reset);
+  const onKeyDown = (e: Event) => {
+    const key = (e as KeyboardEvent).key;
+    if (key.startsWith('Arrow') || key === 'Home' || key === 'End' || key === 'Escape') reset();
+  };
+  target.addEventListener('keydown', onKeyDown);
 
   return {
     enable() {
@@ -221,9 +268,11 @@ export function attachDevanagariIME(
     },
     disable() {
       enabled = false;
+      reset();
     },
     toggle() {
       enabled = !enabled;
+      reset();
       return enabled;
     },
     isEnabled() {
@@ -231,6 +280,9 @@ export function attachDevanagariIME(
     },
     destroy() {
       target.removeEventListener('input', onInput);
+      target.removeEventListener('mousedown', reset);
+      target.removeEventListener('blur', reset);
+      target.removeEventListener('keydown', onKeyDown);
     }
   };
 }

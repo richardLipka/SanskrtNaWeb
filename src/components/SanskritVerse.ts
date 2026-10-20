@@ -7,12 +7,14 @@
  * - Bidirectional cross-highlighting across Devanāgarī, Transliteration, and Translations
  * - Syllable-level metrical weight visualization (Laghu / Guru)
  * - Emits 'word-select' custom event on token click for dictionary/derivation popup
+ * - Emits 'verse-meter-change' when the meter is edited (hidden with the `readonly` attribute)
  */
 
-import { Verse, getVerseCommentaries } from '../core/types/schema.ts';
-import { LanguageAdapter } from '../core/adapters/languageAdapter.ts';
+import { Verse, CzechPhoneticRules, getVerseCommentaries } from '../core/types/schema.ts';
+import { LanguageAdapter, VerseMeterResult } from '../core/adapters/languageAdapter.ts';
 import { defaultSanskritAdapter } from '../core/adapters/sanskritAdapter.ts';
 import { getScriptText } from '../core/transliteration/engine.ts';
+import { escapeHtml, safeUrl, cssEscape, renderAlignedHtml, AlignedPhrase } from '../core/utils/html.ts';
 
 export interface VerseLayerVisibility {
   devanagari?: boolean;
@@ -21,6 +23,15 @@ export interface VerseLayerVisibility {
   meter?: boolean;
   commentary?: boolean;
 }
+
+const TRANSLIT_LABELS: Record<string, string> = {
+  iast: 'IAST',
+  iast_padaccheda: 'IAST – padaccheda',
+  cs_phonetic: 'český fonetický přepis',
+  harvard_kyoto: 'Harvard-Kyoto',
+  hk: 'Harvard-Kyoto',
+  slp1: 'SLP1'
+};
 
 export class SanskritVerseElement extends HTMLElement {
   private _verse: Verse | null = null;
@@ -37,13 +48,16 @@ export class SanskritVerseElement extends HTMLElement {
   private _translationFilter: string = 'all';
   private _devanagariVersion: 'standard' | 'padaccheda' = 'standard';
   private _showMeterAksharas: boolean = true;
+  private _czechRules: Partial<CzechPhoneticRules> | null = null;
+  private _commentaryLangs: string[] | null = null;
+  private _meterCache: { key: string; result: VerseMeterResult | null } | null = null;
 
   constructor() {
     super();
   }
 
   static get observedAttributes() {
-    return ['verse-id', 'transliteration-version', 'translation-filter', 'devanagari-version'];
+    return ['verse-id', 'transliteration-version', 'translation-filter', 'devanagari-version', 'readonly'];
   }
 
   connectedCallback() {
@@ -53,14 +67,14 @@ export class SanskritVerseElement extends HTMLElement {
   attributeChangedCallback(name: string, _oldVal: string, newVal: string) {
     if (name === 'transliteration-version') {
       this._transliterationVersion = newVal || 'iast';
-      this.render();
     } else if (name === 'translation-filter') {
       this._translationFilter = newVal || 'all';
-      this.render();
     } else if (name === 'devanagari-version') {
-      this._devanagariVersion = (newVal as any) || 'standard';
-      this.render();
+      this._devanagariVersion = newVal === 'padaccheda' ? 'padaccheda' : 'standard';
+    } else if (name !== 'readonly') {
+      return;
     }
+    this.render();
   }
 
   get verse(): Verse | null {
@@ -69,6 +83,7 @@ export class SanskritVerseElement extends HTMLElement {
 
   set verse(v: Verse | null) {
     this._verse = v;
+    this._meterCache = null;
     this.render();
   }
 
@@ -78,7 +93,16 @@ export class SanskritVerseElement extends HTMLElement {
 
   set adapter(a: LanguageAdapter) {
     this._adapter = a;
+    this._meterCache = null;
     this.render();
+  }
+
+  get readonly(): boolean {
+    return this.hasAttribute('readonly');
+  }
+
+  set readonly(value: boolean) {
+    this.toggleAttribute('readonly', Boolean(value));
   }
 
   get layerVisibility(): VerseLayerVisibility {
@@ -99,11 +123,17 @@ export class SanskritVerseElement extends HTMLElement {
     translationFilter?: string;
     devanagariVersion?: 'standard' | 'padaccheda';
     showMeterAksharas?: boolean;
+    /** Czech phonetic rules; when set, the Czech transcription is computed live with them */
+    czechRules?: Partial<CzechPhoneticRules> | null;
+    /** Commentary languages to show (e.g. ['sa'] or ['cs', 'en']); null/empty shows all */
+    commentaryLangs?: string[] | null;
   }) {
     if (opts.transliterationVersion !== undefined) this._transliterationVersion = opts.transliterationVersion;
     if (opts.translationFilter !== undefined) this._translationFilter = opts.translationFilter;
     if (opts.devanagariVersion !== undefined) this._devanagariVersion = opts.devanagariVersion;
     if (opts.showMeterAksharas !== undefined) this._showMeterAksharas = opts.showMeterAksharas;
+    if (opts.czechRules !== undefined) this._czechRules = opts.czechRules;
+    if (opts.commentaryLangs !== undefined) this._commentaryLangs = opts.commentaryLangs;
     this.render();
   }
 
@@ -120,6 +150,30 @@ export class SanskritVerseElement extends HTMLElement {
     this.render();
   }
 
+  private getMeterAnalysis(): VerseMeterResult | null {
+    const v = this._verse;
+    if (!v || !this._adapter.analyzeMeter) return null;
+    const rawText = getScriptText(v.scripts.devanagari) || getScriptText(v.scripts.iast) || '';
+    const key = `${rawText}\u0000${v.meter || ''}`;
+    if (this._meterCache?.key === key) return this._meterCache.result;
+    let result: VerseMeterResult | null = null;
+    try {
+      result = this._adapter.analyzeMeter(rawText, v.meter || undefined);
+    } catch {
+      result = null;
+    }
+    this._meterCache = { key, result };
+    return result;
+  }
+
+  private getVisibleCommentaries() {
+    if (!this._verse) return [];
+    const all = getVerseCommentaries(this._verse);
+    const langs = this._commentaryLangs;
+    if (!langs || langs.length === 0) return all;
+    return all.filter((c) => langs.includes(c.lang));
+  }
+
   private render() {
     if (!this._verse) {
       this.innerHTML = '<div class="verse-loading">Načítám verš...</div>';
@@ -132,39 +186,31 @@ export class SanskritVerseElement extends HTMLElement {
     const isTransVis = this.isLayerVisible('translation');
     const isMeterVis = this.isLayerVisible('meter');
     const isCommVis = this.isLayerVisible('commentary');
-    const commentaries = getVerseCommentaries(v);
+    const commentaries = this.getVisibleCommentaries();
+    const sourceUrl = safeUrl(v.source?.url);
+    const verseId = escapeHtml(v.id);
 
     // Build verse HTML
     let html = `
-      <article class="verse-card" id="verse-${v.id}" data-verse-id="${v.id}">
+      <article class="verse-card" id="verse-${verseId}" data-verse-id="${verseId}">
         <!-- Verse Header & Local Controls -->
         <div class="verse-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.85rem;">
           <div style="display: flex; align-items: center; gap: 0.6rem;">
             <div class="verse-badge" style="background: var(--bg-card); border: 1px solid var(--accent-gold); padding: 3px 10px; border-radius: 6px; font-weight: 700; color: var(--accent-gold); display: inline-flex; align-items: center; gap: 5px;">
               <span>॥</span>
-              <span>${this.escape(v.number)}</span>
+              <span>${escapeHtml(v.number)}</span>
             </div>
-            ${v.source?.url ? `<a href="${v.source.url}" target="_blank" rel="noopener noreferrer" class="verse-source-link" style="font-size: 0.8rem; color: var(--text-muted); text-decoration: underline;">${this.escape(v.source.title || 'Zdroj')} ↗</a>` : ''}
+            ${sourceUrl ? `<a href="${escapeHtml(sourceUrl)}" target="_blank" rel="noopener noreferrer" class="verse-source-link" style="font-size: 0.8rem; color: var(--text-muted); text-decoration: underline;">${escapeHtml(v.source?.title || 'Zdroj')} ↗</a>` : ''}
           </div>
 
           <!-- Local layer pills for this verse -->
           <div class="verse-local-controls" style="display: flex; gap: 0.35rem; align-items: center; flex-wrap: wrap;">
             <span style="font-size: 0.72rem; color: var(--text-muted); margin-right: 2px;">Vrstvy:</span>
-            <button class="layer-pill ${isDevaVis ? 'active' : ''}" data-toggle-layer="devanagari" title="Přepnout Dévanágarí pro tento verš">
-              ${isDevaVis ? '✓' : '✗'} Déva
-            </button>
-            <button class="layer-pill ${isTranslitVis ? 'active' : ''}" data-toggle-layer="transliteration" title="Přepnout transliteraci pro tento verš">
-              ${isTranslitVis ? '✓' : '✗'} Translit
-            </button>
-            <button class="layer-pill ${isTransVis ? 'active' : ''}" data-toggle-layer="translation" title="Přepnout překlad pro tento verš">
-              ${isTransVis ? '✓' : '✗'} Překlad
-            </button>
-            <button class="layer-pill ${isMeterVis ? 'active' : ''}" data-toggle-layer="meter" title="Přepnout metrum pro tento verš">
-              ${isMeterVis ? '✓' : '✗'} Metrum
-            </button>
-            <button class="layer-pill ${isCommVis ? 'active' : ''}" data-toggle-layer="commentary" title="Přepnout zobrazení komentářů pro tento verš">
-              ${isCommVis ? '✓' : '✗'} Výklady (${commentaries.length})
-            </button>
+            ${this.renderPill('devanagari', isDevaVis, 'Déva', 'Přepnout Dévanágarí pro tento verš')}
+            ${this.renderPill('transliteration', isTranslitVis, 'Translit', 'Přepnout transliteraci pro tento verš')}
+            ${this.renderPill('translation', isTransVis, 'Překlad', 'Přepnout překlad pro tento verš')}
+            ${this.renderPill('meter', isMeterVis, 'Metrum', 'Přepnout metrum pro tento verš')}
+            ${this.renderPill('commentary', isCommVis, `Výklady (${commentaries.length})`, 'Přepnout zobrazení komentářů pro tento verš')}
           </div>
         </div>
     `;
@@ -176,7 +222,7 @@ export class SanskritVerseElement extends HTMLElement {
           <div class="layer-box-header" style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 0.35rem;">
             1. Dévanágarí ${this._devanagariVersion === 'padaccheda' ? '(oddělená slova / padaccheda)' : ''}:
           </div>
-          <div class="layer-content layer-deva-content" style="font-family: var(--font-deva, serif); font-size: 1.55rem; line-height: 1.6; color: var(--text-primary);">
+          <div class="layer-content layer-deva-content" lang="sa" style="font-family: var(--font-deva, serif); font-size: 1.55rem; line-height: 1.6; color: var(--text-primary);">
             ${this.renderDevanagariContent()}
           </div>
         </div>
@@ -185,10 +231,11 @@ export class SanskritVerseElement extends HTMLElement {
 
     // 2. LAYER: TRANSLITERATION
     if (isTranslitVis) {
+      const label = TRANSLIT_LABELS[this._transliterationVersion] || this._transliterationVersion;
       html += `
         <div class="layer-box layer-translit-box" style="margin-bottom: 0.75rem;">
           <div class="layer-box-header" style="font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 0.35rem;">
-            2. Transliterace (${this._transliterationVersion.toUpperCase()}):
+            2. Transliterace (${escapeHtml(label)}):
           </div>
           <div class="layer-content layer-translit-content" style="font-size: 1.05rem; line-height: 1.55; color: var(--text-secondary); font-style: italic;">
             ${this.renderTransliterationContent()}
@@ -208,9 +255,9 @@ export class SanskritVerseElement extends HTMLElement {
           <div class="layer-content layer-translation-content">
             ${filtered.length === 0 ? '<div style="font-size: 0.85rem; color: var(--text-muted); font-style: italic;">Pro vybraný filtr není překlad k dispozici.</div>' : ''}
             ${filtered.map((tr) => `
-              <div class="trans-item" style="margin-bottom: 0.45rem;">
+              <div class="trans-item" style="margin-bottom: 0.45rem;" lang="${escapeHtml(tr.lang || 'cs')}">
                 <span class="trans-tag" style="font-size: 0.72rem; background: var(--bg-secondary); border-radius: 4px; padding: 1px 6px; font-weight: 600; color: var(--accent-gold); margin-right: 0.4rem;">
-                  [${((tr.lang || (tr as any).language || 'cs') as string).toUpperCase()}] ${this.escape(tr.label || tr.type || '')}
+                  [${escapeHtml((tr.lang || 'cs').toUpperCase())}] ${escapeHtml(tr.label || tr.type || '')}
                 </span>
                 <span class="trans-text ${tr.type === 'fluent' ? 'trans-fluent-text' : 'trans-literal-text'}" style="font-size: 0.95rem; line-height: 1.45;">
                   ${this.renderAlignedTranslation(tr.text, tr.id)}
@@ -224,17 +271,17 @@ export class SanskritVerseElement extends HTMLElement {
 
     // 4. LAYER: METER (CHANDAS)
     if (isMeterVis) {
-      const rawText = getScriptText(v.scripts.devanagari) || getScriptText(v.scripts.iast) || '';
-      const meterRes = this._adapter.analyzeMeter ? this._adapter.analyzeMeter(rawText, v.meter) : null;
-      const meterName = meterRes?.meterName || v.meter || 'Detekuji metrum...';
+      const meterRes = this.getMeterAnalysis();
+      const meterName = meterRes?.meterName || v.meter || 'Metrum neurčeno';
 
       html += `
         <div class="layer-box layer-meter-box" style="margin-bottom: 0.75rem;">
           <div class="layer-box-header" style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.4rem; font-size: 0.75rem; text-transform: uppercase; color: var(--text-muted); font-weight: 700; margin-bottom: 0.35rem;">
-            <span>4. Metrum & Rytmus (Chandas): <strong style="color: var(--accent-gold);">${this.escape(meterName)}</strong> (${meterRes?.totalSyllables || 0} slabik)</span>
-            <button class="btn btn-sm btn-outline btn-edit-meter" data-verse-id="${v.id}" style="font-size: 0.7rem; padding: 1px 6px;">
+            <span>4. Metrum & Rytmus (Chandas): <strong style="color: var(--accent-gold);">${escapeHtml(meterName)}</strong> (${meterRes?.totalSyllables || 0} slabik)</span>
+            ${this.readonly ? '' : `
+            <button class="btn btn-sm btn-outline btn-edit-meter" data-verse-id="${verseId}" style="font-size: 0.7rem; padding: 1px 6px;">
               ✏️ Upravit metrum
-            </button>
+            </button>`}
           </div>
           ${this._showMeterAksharas && meterRes && meterRes.padas.length > 0 ? `
             <div class="meter-padas-container" style="display: flex; flex-direction: column; gap: 0.4rem; margin-top: 0.4rem;">
@@ -243,7 +290,7 @@ export class SanskritVerseElement extends HTMLElement {
                   <span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600; min-width: 60px;">Pāda ${p.padaIndex} (${p.syllableCount}):</span>
                   <div style="display: flex; gap: 0.25rem; flex-wrap: wrap; align-items: center;">
                     ${p.syllables.map((s) => `
-                      <span class="akshara-pill ${s.weight === 'G' ? 'guru' : 'laghu'}" title="${this.escape(s.text)} (${this.escape(s.translit)}) — ${this.escape(s.weightLabel)}" style="
+                      <span class="akshara-pill ${s.weight === 'G' ? 'guru' : 'laghu'}" title="${escapeHtml(s.text)} (${escapeHtml(s.translit)}) — ${escapeHtml(s.weightLabel)}" style="
                         padding: 1px 5px;
                         border-radius: 3px;
                         font-size: 0.82rem;
@@ -254,8 +301,8 @@ export class SanskritVerseElement extends HTMLElement {
                         align-items: baseline;
                         gap: 2px;
                       ">
-                        <strong>${this.escape(s.text)}</strong>
-                        <small style="font-size: 0.7rem; color: var(--text-muted);">${this.escape(s.translit)}</small>
+                        <strong>${escapeHtml(s.text)}</strong>
+                        <small style="font-size: 0.7rem; color: var(--text-muted);">${escapeHtml(s.translit)}</small>
                         <sub style="font-weight: 700; color: ${s.weight === 'G' ? 'var(--accent-terracotta)' : 'var(--text-muted)'};">${s.weight === 'G' ? '—' : '∪'}</sub>
                       </span>
                     `).join('')}
@@ -281,30 +328,31 @@ export class SanskritVerseElement extends HTMLElement {
             </span>
           </div>
           <div class="commentaries-grid" style="display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 0.75rem;">
-            ${commentaries.map((comm) => `
-              <div class="commentary-card" style="background: var(--bg-card); border-left: 3px solid ${comm.isOriginalSanskrit || comm.lang === 'sa' ? 'var(--accent-terracotta)' : 'var(--accent-gold)'}; border-radius: 6px; padding: 0.6rem 0.85rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
+            ${commentaries.map((comm) => {
+              const isSa = comm.isOriginalSanskrit || comm.lang === 'sa';
+              return `
+              <div class="commentary-card" style="background: var(--bg-card); border-left: 3px solid ${isSa ? 'var(--accent-terracotta)' : 'var(--accent-gold)'}; border-radius: 6px; padding: 0.6rem 0.85rem; box-shadow: 0 1px 3px rgba(0,0,0,0.05);">
                 <div class="comm-card-header" style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem; flex-wrap: wrap; gap: 4px;">
                   <div style="display: flex; align-items: center; gap: 6px;">
-                    <strong style="color: var(--accent-gold); font-size: 0.9rem;">${this.escape(comm.author)}</strong>
-                    ${comm.tradition ? `<span style="font-size: 0.72rem; color: var(--text-muted); font-style: italic;">(${this.escape(comm.tradition)})</span>` : ''}
+                    <strong style="color: var(--accent-gold); font-size: 0.9rem;">${escapeHtml(comm.author)}</strong>
+                    ${comm.tradition ? `<span style="font-size: 0.72rem; color: var(--text-muted); font-style: italic;">(${escapeHtml(comm.tradition)})</span>` : ''}
                   </div>
                   <div style="display: flex; gap: 4px; align-items: center;">
                     <span style="font-size: 0.68rem; font-weight: 700; background: var(--bg-secondary); border-radius: 3px; padding: 1px 4px; text-transform: uppercase;">
-                      ${this.escape(comm.lang)}
+                      ${escapeHtml(comm.lang)}
                     </span>
-                    ${comm.title ? `<span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">${this.escape(comm.title)}</span>` : ''}
+                    ${comm.title ? `<span style="font-size: 0.72rem; color: var(--text-muted); font-weight: 600;">${escapeHtml(comm.title)}</span>` : ''}
                   </div>
                 </div>
-                <div class="comm-card-body" style="font-size: 0.88rem; line-height: 1.5; color: var(--text-primary); ${comm.isOriginalSanskrit || comm.lang === 'sa' ? 'font-family: var(--font-deva, serif); font-size: 0.98rem;' : ''}">
-                  ${this.escape(comm.text)}
-                </div>
+                <div class="comm-card-body" lang="${escapeHtml(comm.lang)}" style="font-size: 0.88rem; line-height: 1.5; color: var(--text-primary); white-space: pre-line; ${isSa ? 'font-family: var(--font-deva, serif); font-size: 0.98rem;' : ''}">${escapeHtml(comm.text)}</div>
                 ${comm.source ? `
                   <div class="comm-card-source" style="margin-top: 0.35rem; font-size: 0.72rem; color: var(--text-muted); font-style: italic; text-align: right;">
-                    📖 ${this.escape(comm.source)}
+                    📖 ${escapeHtml(comm.source)}
                   </div>
                 ` : ''}
               </div>
-            `).join('')}
+            `;
+            }).join('')}
           </div>
         </div>
       `;
@@ -315,23 +363,49 @@ export class SanskritVerseElement extends HTMLElement {
     this.setupInteractions();
   }
 
+  private renderPill(layer: keyof VerseLayerVisibility, active: boolean, label: string, title: string): string {
+    return `
+      <button class="layer-pill ${active ? 'active' : ''}" data-toggle-layer="${layer}" title="${escapeHtml(title)}" aria-pressed="${active}">
+        ${active ? '✓' : '✗'} ${escapeHtml(label)}
+      </button>`;
+  }
+
+  private renderToken(tokenId: string, text: string): string {
+    const v = this._verse!;
+    return `<span class="token" data-token-id="${escapeHtml(tokenId)}" data-verse-id="${escapeHtml(v.id)}" tabindex="0" role="button" style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.15s ease;">${escapeHtml(text)}</span>`;
+  }
+
   private renderDevanagariContent(): string {
     if (!this._verse) return '';
     const v = this._verse;
 
     if (this._devanagariVersion === 'padaccheda' && v.scripts.devanagari_padaccheda) {
-      return this.escape(getScriptText(v.scripts.devanagari_padaccheda));
+      return escapeHtml(getScriptText(v.scripts.devanagari_padaccheda));
     }
 
     if (v.tokens && v.tokens.length > 0) {
-      return v.tokens.map((tok, i) => `
-        <span class="token" data-token-id="${tok.id}" data-verse-id="${v.id}" style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.15s ease;">
-          ${this.escape(tok.text.devanagari)}
-        </span>${i < v.tokens.length - 1 ? ' ' : ''}
-      `).join('');
+      return v.tokens.map((tok) => this.renderToken(tok.id, tok.text.devanagari)).join(' ');
     }
 
-    return this.escape(getScriptText(v.scripts.devanagari));
+    return escapeHtml(getScriptText(v.scripts.devanagari));
+  }
+
+  /** Converts IAST into the selected transliteration version. */
+  private convertIast(iast: string, storedCsPhonetic?: string): string {
+    const ver = this._transliterationVersion;
+    if (!iast) return '';
+    switch (ver) {
+      case 'cs_phonetic':
+        if (!this._czechRules && storedCsPhonetic) return storedCsPhonetic;
+        return this._adapter.transliterate(iast, 'iast', 'cs_phonetic', this._czechRules ? { czechRules: this._czechRules } : undefined);
+      case 'harvard_kyoto':
+      case 'hk':
+        return this._adapter.transliterate(iast, 'iast', 'hk');
+      case 'slp1':
+        return this._adapter.transliterate(iast, 'iast', 'slp1');
+      default:
+        return iast;
+    }
   }
 
   private renderTransliterationContent(): string {
@@ -340,67 +414,52 @@ export class SanskritVerseElement extends HTMLElement {
     const ver = this._transliterationVersion;
 
     if (v.tokens && v.tokens.length > 0) {
-      return v.tokens.map((tok, i) => {
-        let text = tok.text.iast;
-        if (ver === 'cs_phonetic' && tok.text.cs_phonetic) {
-          text = tok.text.cs_phonetic;
-        } else if (ver === 'slp1') {
-          text = this._adapter.transliterate(tok.text.iast, 'iast', 'slp1');
-        }
-
-        return `
-          <span class="token" data-token-id="${tok.id}" data-verse-id="${v.id}" style="cursor: pointer; padding: 2px 4px; border-radius: 4px; transition: background 0.15s ease;">
-            ${this.escape(text)}
-          </span>${i < v.tokens.length - 1 ? ' ' : ''}
-        `;
-      }).join('');
+      return v.tokens
+        .map((tok) => this.renderToken(tok.id, this.convertIast(tok.text.iast, tok.text.cs_phonetic)))
+        .join(' ');
     }
 
-    if (ver === 'cs_phonetic' && v.scripts.cs_phonetic) {
-      return this.escape(getScriptText(v.scripts.cs_phonetic));
+    if (ver === 'iast_padaccheda' && v.scripts.iast_padaccheda) {
+      return escapeHtml(getScriptText(v.scripts.iast_padaccheda));
     }
-    return this.escape(getScriptText(v.scripts.iast));
+    if (ver === 'cs_phonetic' && v.scripts.cs_phonetic && !this._czechRules) {
+      return escapeHtml(getScriptText(v.scripts.cs_phonetic));
+    }
+    return escapeHtml(this.convertIast(getScriptText(v.scripts.iast)));
   }
 
   private getFilteredTranslations(): Verse['translations'] {
     if (!this._verse?.translations) return [];
     const filter = this._translationFilter;
-    if (filter === 'all') return this._verse.translations;
-    if (filter === 'cs') return this._verse.translations.filter((t) => t.lang === 'cs');
-    if (filter === 'cs_fluent') return this._verse.translations.filter((t) => t.lang === 'cs' && t.type === 'fluent');
-    if (filter === 'cs_literal') return this._verse.translations.filter((t) => t.lang === 'cs' && t.type === 'literal');
-    if (filter === 'en') return this._verse.translations.filter((t) => t.lang === 'en');
-    return this._verse.translations.filter((t) => t.lang === filter);
+    const all = this._verse.translations;
+    if (filter === 'all') return all;
+    const typed = filter.match(/^([a-z]{2,3})_(fluent|literal|scholarly|poetic|commentary)$/);
+    if (typed) return all.filter((t) => t.lang === typed[1] && t.type === typed[2]);
+    return all.filter((t) => t.lang === filter);
   }
 
   private renderAlignedTranslation(text: string, translationId: string): string {
-    if (!this._verse?.tokens || this._verse.tokens.length === 0) {
-      return this.escape(text);
+    const alignments: AlignedPhrase[] = [];
+    for (const token of this._verse?.tokens || []) {
+      for (const phrase of token.alignment?.matched_words?.[translationId] || []) {
+        alignments.push({ phrase, tokenId: token.id });
+      }
     }
 
-    let result = text;
-    // Map matched words to tokens
-    const alignments: Array<{ phrase: string; tokenId: string }> = [];
+    return renderAlignedHtml(text, alignments, (escapedPhrase, tokenId) =>
+      `<span class="aligned-phrase" data-aligned-token="${escapeHtml(tokenId)}" style="cursor: pointer; border-bottom: 1px dotted var(--accent-gold); padding: 0 1px; transition: background 0.15s ease;">${escapedPhrase}</span>`
+    );
+  }
 
-    this._verse.tokens.forEach((token) => {
-      const matches = token.alignment?.matched_words?.[translationId] || [];
-      matches.forEach((phrase) => {
-        if (phrase && phrase.trim().length > 0) {
-          alignments.push({ phrase: phrase.trim(), tokenId: token.id });
-        }
-      });
-    });
-
-    // Sort by length descending to replace longer phrases first
-    alignments.sort((a, b) => b.phrase.length - a.phrase.length);
-
-    alignments.forEach(({ phrase, tokenId }) => {
-      const escapedPhrase = phrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-      const regex = new RegExp(`(\\b${escapedPhrase}\\b|${escapedPhrase})`, 'i');
-      result = result.replace(regex, `<span class="aligned-phrase" data-aligned-token="${tokenId}" style="cursor: pointer; border-bottom: 1px dotted var(--accent-gold); padding: 0 1px; transition: background 0.15s ease;">$1</span>`);
-    });
-
-    return result;
+  private emitWordSelect(tokenId: string) {
+    const token = this._verse?.tokens?.find((t) => t.id === tokenId);
+    if (token && this._verse) {
+      this.dispatchEvent(new CustomEvent('word-select', {
+        detail: { token, verse: this._verse },
+        bubbles: true,
+        composed: true
+      }));
+    }
   }
 
   private setupInteractions() {
@@ -422,97 +481,50 @@ export class SanskritVerseElement extends HTMLElement {
           `Zadejte druh metra pro verš ${this._verse?.number}:`,
           this._verse?.meter || ''
         );
-        if (newMeter !== null) {
-          this._verse!.meter = newMeter.trim();
+        if (newMeter !== null && this._verse) {
+          this._verse.meter = newMeter.trim();
+          this._meterCache = null;
           this.render();
+          this.dispatchEvent(new CustomEvent('verse-meter-change', {
+            detail: { verse: this._verse, meter: this._verse.meter },
+            bubbles: true,
+            composed: true
+          }));
         }
       });
     }
 
-    // 3. Bidirectional Cross-Highlighting
-    // Hover on Devanagari or IAST token -> highlights translation phrase
-    this.querySelectorAll('.token').forEach((tokenEl) => {
-      const tokenId = tokenEl.getAttribute('data-token-id');
+    // 3. Bidirectional Cross-Highlighting (tokens and aligned translation phrases)
+    const bind = (el: Element, tokenId: string | null) => {
       if (!tokenId) return;
-
-      tokenEl.addEventListener('mouseenter', () => {
-        this.setHighlight(tokenId, true);
-      });
-      tokenEl.addEventListener('mouseleave', () => {
-        this.setHighlight(tokenId, false);
-      });
-
-      // Click to open word detail popup
-      tokenEl.addEventListener('click', (e) => {
+      el.addEventListener('mouseenter', () => this.setHighlight(tokenId, true));
+      el.addEventListener('mouseleave', () => this.setHighlight(tokenId, false));
+      el.addEventListener('focus', () => this.setHighlight(tokenId, true));
+      el.addEventListener('blur', () => this.setHighlight(tokenId, false));
+      el.addEventListener('click', (e) => {
         e.stopPropagation();
-        const token = this._verse?.tokens?.find((t) => t.id === tokenId);
-        if (token && this._verse) {
-          this.dispatchEvent(new CustomEvent('word-select', {
-            detail: { token, verse: this._verse },
-            bubbles: true,
-            composed: true
-          }));
+        this.emitWordSelect(tokenId);
+      });
+      el.addEventListener('keydown', (e) => {
+        const key = (e as KeyboardEvent).key;
+        if (key === 'Enter' || key === ' ') {
+          e.preventDefault();
+          this.emitWordSelect(tokenId);
         }
       });
-    });
+    };
 
-    // Hover on aligned phrase in translation -> highlights Devanagari & IAST
-    this.querySelectorAll('.aligned-phrase').forEach((phraseEl) => {
-      const tokenId = phraseEl.getAttribute('data-aligned-token');
-      if (!tokenId) return;
-
-      phraseEl.addEventListener('mouseenter', () => {
-        this.setHighlight(tokenId, true);
-      });
-      phraseEl.addEventListener('mouseleave', () => {
-        this.setHighlight(tokenId, false);
-      });
-      phraseEl.addEventListener('click', (e) => {
-        e.stopPropagation();
-        const token = this._verse?.tokens?.find((t) => t.id === tokenId);
-        if (token && this._verse) {
-          this.dispatchEvent(new CustomEvent('word-select', {
-            detail: { token, verse: this._verse },
-            bubbles: true,
-            composed: true
-          }));
-        }
-      });
-    });
+    this.querySelectorAll('.token').forEach((el) => bind(el, el.getAttribute('data-token-id')));
+    this.querySelectorAll('.aligned-phrase').forEach((el) => bind(el, el.getAttribute('data-aligned-token')));
   }
 
   private setHighlight(tokenId: string, isActive: boolean) {
-    const tokens = this.querySelectorAll(`[data-token-id="${tokenId}"]`);
-    tokens.forEach((el) => {
-      if (isActive) {
-        (el as HTMLElement).style.backgroundColor = 'var(--token-highlight-bg, rgba(217, 119, 6, 0.28))';
-        (el as HTMLElement).style.boxShadow = '0 0 0 2px var(--accent-gold)';
-      } else {
-        (el as HTMLElement).style.backgroundColor = '';
-        (el as HTMLElement).style.boxShadow = '';
-      }
+    const id = cssEscape(tokenId);
+    this.querySelectorAll(`[data-token-id="${id}"], [data-aligned-token="${id}"]`).forEach((el) => {
+      const style = (el as HTMLElement).style;
+      style.backgroundColor = isActive ? 'var(--token-highlight-bg, rgba(217, 119, 6, 0.28))' : '';
+      style.boxShadow = isActive ? '0 0 0 2px var(--accent-gold)' : '';
     });
-
-    const phrases = this.querySelectorAll(`[data-aligned-token="${tokenId}"]`);
-    phrases.forEach((el) => {
-      if (isActive) {
-        (el as HTMLElement).style.backgroundColor = 'var(--token-highlight-bg, rgba(217, 119, 6, 0.28))';
-        (el as HTMLElement).style.boxShadow = '0 0 0 2px var(--accent-gold)';
-      } else {
-        (el as HTMLElement).style.backgroundColor = '';
-        (el as HTMLElement).style.boxShadow = '';
-      }
-    });
-  }
-
-  private escape(str?: string): string {
-    if (!str) return '';
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;')
-      .replace(/'/g, '&#039;');
   }
 }
 

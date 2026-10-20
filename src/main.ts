@@ -1,4 +1,4 @@
-import { SanskritDocument, AppSettings, Token, AlphabetMappingTable } from './core/types/schema.ts';
+import { SanskritDocument, AppSettings, AlphabetMappingTable, AppSettingsSchema } from './core/types/schema.ts';
 import { SAMPLE_DOCUMENT } from './data/sampleVerses.ts';
 import './components/index.ts';
 import { SanskritReaderElement } from './components/SanskritReader.ts';
@@ -43,25 +43,7 @@ import {
 
 // State
 let activeDoc: SanskritDocument = loadDocumentFromCache() || SAMPLE_DOCUMENT;
-let activeSettings: AppSettings = loadSettingsFromCache() || {
-  version: '2.0.0',
-  layers: {
-    devanagari: { visible: true, version: 'standard' },
-    transliteration: { visible: true, version: 'iast' },
-    translation: { visible: true, activeLang: 'cs', activeTypes: ['fluent', 'literal'] },
-    commentary: { visible: true, activeAuthors: [], activeLangs: ['sa', 'cs', 'en'], layout: 'stacked' },
-    meter: { visible: true, showAksharas: true }
-  },
-  theme: 'parchment',
-  uiLanguage: 'cs',
-  czechRules: createCzechRules(),
-  defaultDictionary: 'cologne_mw',
-  preserveManualEdits: true,
-  fontSizeDevanagari: 24,
-  fontSizeTransliteration: 16,
-  fontFamilyDevanagari: 'Tiro Devanagari Sanskrit, Noto Serif Devanagari, serif',
-  autoSaveToLocalStorage: true
-};
+let activeSettings: AppSettings = loadSettingsFromCache() || AppSettingsSchema.parse({ czechRules: createCzechRules() });
 
 let activeAlphabetTable: AlphabetMappingTable = DEFAULT_ALPHABET_MAPPING;
 let activeCharTableTab: 'base' | 'ligatures' = 'base';
@@ -141,13 +123,10 @@ const editorContainerEl = document.getElementById('editor-container')!;
 const mainEditorEl = document.getElementById('main-sanskrit-editor') as SanskritEditorElement;
 
 /**
- * Initialize application
+ * Reflects the active settings in the page controls (layers, rules, theme).
  */
-function init(): void {
-  applyTheme(activeSettings.theme);
+function syncControlsFromSettings(): void {
   themeSelector.value = activeSettings.theme;
-
-  // Sync 4-layer controls
   layerDevaToggle.checked = activeSettings.layers.devanagari.visible;
   layerDevaVersion.value = activeSettings.layers.devanagari.version;
   layerTranslitToggle.checked = activeSettings.layers.transliteration.visible;
@@ -161,6 +140,51 @@ function init(): void {
   if (layerCommToggle) {
     layerCommToggle.checked = activeSettings.layers.commentary?.visible ?? true;
   }
+  if (layerCommView) {
+    const langs = activeSettings.layers.commentary?.activeLangs || [];
+    layerCommView.value = langs.length === 1 && langs[0] === 'sa'
+      ? 'sanskrit_only'
+      : (langs.length > 0 && !langs.includes('sa') ? 'vernacular_only' : 'simultaneous');
+  }
+  ruleRSyllabic.value = activeSettings.czechRules.rSyllabic;
+  ruleLongVowels.value = activeSettings.czechRules.longVowels;
+  ruleCPalatal.value = activeSettings.czechRules.cPalatal;
+  ruleJAffricate.value = activeSettings.czechRules.jAffricate;
+}
+
+const TRANSLIT_VERSIONS: AppSettings['layers']['transliteration']['version'][] =
+  ['iast', 'cs_phonetic', 'harvard_kyoto', 'slp1', 'iast_padaccheda'];
+
+/** Options passed to <sanskrit-reader> derived from the active settings. */
+function readerOptions() {
+  const commLangs = activeSettings.layers.commentary?.activeLangs || [];
+  return {
+    transliterationVersion: activeSettings.layers.transliteration.version,
+    translationFilter: activeSettings.layers.translation.activeLang,
+    devanagariVersion: activeSettings.layers.devanagari.version,
+    showMeterAksharas: activeSettings.layers.meter?.showAksharas ?? true,
+    czechRules: activeSettings.czechRules,
+    // All three default languages selected means "show every commentary"
+    commentaryLangs: commLangs.length === 0 || ['sa', 'cs', 'en'].every((l) => commLangs.includes(l)) ? null : commLangs
+  };
+}
+
+function readerLayers() {
+  return {
+    devanagari: activeSettings.layers.devanagari.visible,
+    transliteration: activeSettings.layers.transliteration.visible,
+    translation: activeSettings.layers.translation.visible,
+    meter: activeSettings.layers.meter?.visible ?? true,
+    commentary: activeSettings.layers.commentary?.visible ?? true
+  };
+}
+
+/**
+ * Initialize application
+ */
+function init(): void {
+  applyTheme(activeSettings.theme);
+  syncControlsFromSettings();
 
   updateDocHeader();
   renderVerses();
@@ -225,19 +249,31 @@ function renderVerses(): void {
   versesContainerEl.innerHTML = '';
 
   const reader = document.createElement('sanskrit-reader') as SanskritReaderElement;
+  reader.setGlobalLayers(readerLayers());
+  reader.setOptions(readerOptions());
   reader.document = activeDoc;
-  reader.setGlobalLayers({
-    devanagari: activeSettings.layers.devanagari.visible,
-    transliteration: activeSettings.layers.transliteration.visible,
-    translation: activeSettings.layers.translation.visible,
-    meter: activeSettings.layers.meter?.visible ?? true,
-    commentary: activeSettings.layers.commentary?.visible ?? true
+
+  // Meter edited inside a verse card: the verse object is shared with activeDoc, persist it
+  reader.addEventListener('verse-meter-change', () => {
+    saveDocumentToCache(activeDoc);
+    renderSargeantView();
   });
-  reader.setOptions({
-    transliterationVersion: activeSettings.layers.transliteration.version,
-    translationFilter: activeSettings.layers.translation.activeLang,
-    devanagariVersion: activeSettings.layers.devanagari.version,
-    showMeterAksharas: activeSettings.layers.meter?.showAksharas ?? true
+
+  // Layer toolbar inside the reader: keep settings and page controls in sync
+  reader.addEventListener('layers-change', (e: Event) => {
+    const d = (e as CustomEvent).detail;
+    activeSettings.layers.devanagari.visible = d.layers.devanagari;
+    activeSettings.layers.devanagari.version = d.devanagariVersion;
+    activeSettings.layers.transliteration.visible = d.layers.transliteration;
+    if (TRANSLIT_VERSIONS.includes(d.transliterationVersion)) {
+      activeSettings.layers.transliteration.version = d.transliterationVersion;
+    }
+    activeSettings.layers.translation.visible = d.layers.translation;
+    activeSettings.layers.translation.activeLang = d.translationFilter;
+    activeSettings.layers.meter = { visible: d.layers.meter, showAksharas: d.showMeterAksharas };
+    if (activeSettings.layers.commentary) activeSettings.layers.commentary.visible = d.layers.commentary;
+    saveSettingsToCache(activeSettings);
+    syncControlsFromSettings();
   });
 
   versesContainerEl.appendChild(reader);
@@ -246,36 +282,12 @@ function renderVerses(): void {
 
 function syncGlobalLayersToReader(): void {
   if (activeReaderEl) {
-    activeReaderEl.setGlobalLayers({
-      devanagari: activeSettings.layers.devanagari.visible,
-      transliteration: activeSettings.layers.transliteration.visible,
-      translation: activeSettings.layers.translation.visible,
-      meter: activeSettings.layers.meter?.visible ?? true,
-      commentary: activeSettings.layers.commentary?.visible ?? true
-    });
-    activeReaderEl.setOptions({
-      transliterationVersion: activeSettings.layers.transliteration.version,
-      translationFilter: activeSettings.layers.translation.activeLang,
-      devanagariVersion: activeSettings.layers.devanagari.version,
-      showMeterAksharas: activeSettings.layers.meter?.showAksharas ?? true
-    });
+    activeReaderEl.setGlobalLayers(readerLayers());
+    activeReaderEl.setOptions(readerOptions());
   } else {
     renderVerses();
   }
 }
-
-
-
-
-
-/**
- * Open Word Details Popup Modal (Multilingual Support)
- */
-export function openWordModal(_token: Token): void {
-  // Built-in word modal is handled inside <sanskrit-reader> component
-}
-
-export function closeWordModal(): void {}
 
 /**
  * Render Sargeant Print View
@@ -390,7 +402,7 @@ async function runLemmatizer(): Promise<void> {
                 <span style="font-size: 0.82rem; color: var(--text-muted); margin-right: 0.35rem;">Heslo / lemma:</span>
                 <strong style="color: var(--accent-saffron); font-size: 1.1rem; font-family: 'Tiro Devanagari Sanskrit', serif;">${escapeHtml(a.lemma)}</strong>
                 ${a.stem ? `<span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 0.5rem;">(kmen: <em>${escapeHtml(a.stem)}</em>)</span>` : ''}
-                ${a.root ? `<span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 0.5rem;">(kořen: <em>√${escapeHtml(a.root)}</em>)</span>` : ''}
+                ${a.root ? `<span style="color: var(--text-muted); font-size: 0.85rem; margin-left: 0.5rem;">(kořen: <em>${escapeHtml(a.root.startsWith('√') ? a.root : `√${a.root}`)}</em>)</span>` : ''}
               </div>
               <span style="font-size: 0.78rem; background: var(--bg-primary); border: 1px solid var(--bg-card-border); border-radius: 4px; padding: 2px 6px; color: var(--accent-gold);">
                 spolehlivost ${(a.confidence * 100).toFixed(0)} %
@@ -444,7 +456,7 @@ async function runLemmatizer(): Promise<void> {
           </div>
           <div style="display: flex; gap: 0.35rem; flex-wrap: wrap;">
             ${fullResult.meterInfo.aksharas.map(ak => `
-              <span title="${ak.weightLabelCs}" style="font-size: 0.82rem; background: var(--bg-primary); border: 1px solid ${ak.weight === 'G' ? 'var(--accent-saffron)' : 'var(--bg-card-border)'}; border-radius: 4px; padding: 2px 6px;">
+              <span title="${escapeHtml(ak.weightLabelCs)}" style="font-size: 0.82rem; background: var(--bg-primary); border: 1px solid ${ak.weight === 'G' ? 'var(--accent-saffron)' : 'var(--bg-card-border)'}; border-radius: 4px; padding: 2px 6px;">
                 ${escapeHtml(ak.text)} <sub style="font-weight: bold; color: ${ak.weight === 'G' ? 'var(--accent-saffron)' : 'var(--text-muted)'};">${ak.weight === 'G' ? '— (G)' : '∪ (L)'}</sub>
               </span>
             `).join('')}
@@ -700,22 +712,14 @@ function setupEventListeners(): void {
     if (file) {
       try {
         const loaded = await importSettingsFromFile(file);
-        activeSettings = loaded;
+        // Keep the locally stored API key; exported settings files never contain it
+        activeSettings = loaded.llmConfig?.apiKey || !activeSettings.llmConfig
+          ? loaded
+          : { ...loaded, llmConfig: loaded.llmConfig ? { ...loaded.llmConfig, apiKey: activeSettings.llmConfig.apiKey } : activeSettings.llmConfig };
         saveSettingsToCache(activeSettings);
         applyTheme(activeSettings.theme);
-        themeSelector.value = activeSettings.theme;
 
-        // Sync 4-layer controls
-        layerDevaToggle.checked = activeSettings.layers.devanagari.visible;
-        layerDevaVersion.value = activeSettings.layers.devanagari.version;
-        layerTranslitToggle.checked = activeSettings.layers.transliteration.visible;
-        layerTranslitVersion.value = activeSettings.layers.transliteration.version;
-        layerTransToggle.checked = activeSettings.layers.translation.visible;
-        layerTransLang.value = activeSettings.layers.translation.activeLang;
-        if (activeSettings.layers.meter) {
-          layerMeterToggle.checked = activeSettings.layers.meter.visible;
-          layerMeterView.value = activeSettings.layers.meter.showAksharas ? 'full' : 'name_only';
-        }
+        syncControlsFromSettings();
 
         updateTester();
         renderVerses();
@@ -749,7 +753,7 @@ function setupEventListeners(): void {
     });
     saveSettingsToCache(activeSettings);
     updateTester();
-    renderVerses();
+    syncGlobalLayersToReader();
   };
 
   ruleRSyllabic.addEventListener('change', onRuleChange);
