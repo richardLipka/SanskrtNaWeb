@@ -22,6 +22,69 @@ export function getSanskritSearchStem(word: string): string {
 }
 
 /**
+ * Decides whether an alignment key (normally a translation id such as "cs_fluent")
+ * belongs to the target language. Without translation metadata only an exact
+ * language code or a "<lang>_" prefix counts ("cs_fluent" is not English).
+ */
+function isAlignmentKeyForLang(transKey: string, verse: Verse, targetLang: string): boolean {
+  const transMeta = verse.translations.find((t) => t.id === transKey);
+  if (transMeta) return transMeta.lang === targetLang;
+  return transKey === targetLang || transKey.startsWith(`${targetLang}_`);
+}
+
+/**
+ * Fuzzy match between a query and a token form. Containment in either direction is only
+ * accepted for forms of at least 3 letters, so particles like "na" or "ca" do not match
+ * every query that happens to contain those letters.
+ */
+function formMatches(form: string, q: string, stemQ: string): boolean {
+  if (!form) return false;
+  if (form === q) return true;
+  if (q.length >= 3 && form.includes(q)) return true;
+  if (form.length >= 3 && q.includes(form)) return true;
+  if (stemQ.length >= 3 && (form.includes(stemQ) || getSanskritSearchStem(form).includes(stemQ))) return true;
+  return false;
+}
+
+const VARNAMALA = [
+  'a', 'ā', 'i', 'ī', 'u', 'ū', 'ṛ', 'ṝ', 'ḷ', 'ḹ', 'e', 'ai', 'o', 'au', 'ṃ', 'ḥ',
+  'k', 'kh', 'g', 'gh', 'ṅ', 'c', 'ch', 'j', 'jh', 'ñ', 'ṭ', 'ṭh', 'ḍ', 'ḍh', 'ṇ',
+  't', 'th', 'd', 'dh', 'n', 'p', 'ph', 'b', 'bh', 'm', 'y', 'r', 'l', 'v', 'ś', 'ṣ', 's', 'h'
+];
+const VARNA_RANK = new Map(VARNAMALA.map((v, i) => [v, i]));
+const VARNA_UNITS = [...VARNAMALA].sort((a, b) => b.length - a.length);
+
+function toVarnaKeys(word: string): number[] {
+  const w = word.normalize('NFC').toLowerCase().replace(/^√/, '');
+  const keys: number[] = [];
+  let i = 0;
+  while (i < w.length) {
+    const unit = VARNA_UNITS.find((u) => w.startsWith(u, i));
+    if (unit) {
+      keys.push(VARNA_RANK.get(unit)!);
+      i += unit.length;
+    } else {
+      keys.push(1000 + w.charCodeAt(i));
+      i++;
+    }
+  }
+  return keys;
+}
+
+/**
+ * Compares two IAST words in traditional Sanskrit alphabetical order (varṇamālā):
+ * a ā i ī … ṃ ḥ k kh g … ś ṣ s h.
+ */
+export function sanskritCompare(a: string, b: string): number {
+  const ka = toVarnaKeys(a);
+  const kb = toVarnaKeys(b);
+  for (let i = 0; i < Math.min(ka.length, kb.length); i++) {
+    if (ka[i] !== kb[i]) return ka[i] - kb[i];
+  }
+  return ka.length - kb.length;
+}
+
+/**
  * Searches the entire book/corpus for prior translations of the given Sanskrit word or lemma.
  * This provides the editor with auto-glossary suggestions:
  * "V jiném verši v této knize jsi stejné slovo přeložil jako..."
@@ -42,39 +105,22 @@ export function getTranslationSuggestions(
   for (const v of verses) {
     for (const token of v.tokens) {
       const tokenIast = token.text.iast.toLowerCase();
-      const tokenStem = getSanskritSearchStem(tokenIast);
       const tokenLemma = token.lemma ? token.lemma.toLowerCase() : '';
-      const lemmaStem = tokenLemma ? getSanskritSearchStem(tokenLemma) : '';
 
-      const matchIast =
-        tokenIast === q ||
-        tokenIast.includes(q) ||
-        q.includes(tokenIast) ||
-        (stemQ.length >= 3 && (tokenIast.includes(stemQ) || tokenStem.includes(stemQ)));
+      const matchIast = formMatches(tokenIast, q, stemQ);
 
+      const rawQuery = queryWord.trim();
       const matchDeva =
-        token.text.devanagari === queryWord.trim() ||
-        token.text.devanagari.includes(queryWord.trim());
+        token.text.devanagari === rawQuery ||
+        (rawQuery.length >= 2 && token.text.devanagari.includes(rawQuery));
 
-      const matchLemma = Boolean(
-        tokenLemma &&
-        (tokenLemma === q ||
-         tokenLemma.includes(q) ||
-         q.includes(tokenLemma) ||
-         (stemQ.length >= 3 && (tokenLemma.includes(stemQ) || lemmaStem.includes(stemQ))))
-      );
+      const matchLemma = formMatches(tokenLemma, q, stemQ);
 
       if (matchIast || matchDeva || matchLemma) {
         // 1. Check aligned words in translations
         if (token.alignment && token.alignment.matched_words) {
           for (const [transKey, words] of Object.entries(token.alignment.matched_words)) {
-            // Check if transKey corresponds to target language directly or via verse translation metadata
-            const transMeta = v.translations.find((t) => t.id === transKey);
-            const isMatchLang = transMeta
-              ? transMeta.lang === targetLang
-              : (transKey.startsWith(targetLang) || transKey.includes(targetLang));
-
-            if (isMatchLang) {
+            if (isAlignmentKeyForLang(transKey, v, targetLang)) {
               for (const word of words) {
                 const cleanWord = word.replace(/[\[\]]/g, '').trim();
                 if (cleanWord.length > 0) {
@@ -171,18 +217,17 @@ export function findWordConcordance(verses: Verse[], query: string): WordConcord
   for (const v of verses) {
     const matchingTokens = v.tokens.filter((tk) => {
       const iast = tk.text.iast.toLowerCase();
-      const tokenStem = getSanskritSearchStem(iast);
       const lemma = tk.lemma ? tk.lemma.toLowerCase() : '';
-      const lemmaStem = lemma ? getSanskritSearchStem(lemma) : '';
       const deva = tk.text.devanagari;
       const rawQuery = query.trim();
       return (
         iast === q ||
-        iast.includes(q) ||
+        (q.length >= 2 && iast.includes(q)) ||
         deva === rawQuery ||
-        deva.includes(rawQuery) ||
-        (stemQ.length >= 3 && (iast.includes(stemQ) || tokenStem.includes(stemQ))) ||
-        (lemma && (lemma === q || lemma.includes(q) || (stemQ.length >= 3 && (lemma.includes(stemQ) || lemmaStem.includes(stemQ)))))
+        (rawQuery.length >= 2 && deva.includes(rawQuery)) ||
+        (stemQ.length >= 3 && (iast.includes(stemQ) || getSanskritSearchStem(iast).includes(stemQ))) ||
+        Boolean(lemma && (lemma === q || (q.length >= 2 && lemma.includes(q)) ||
+          (stemQ.length >= 3 && (lemma.includes(stemQ) || getSanskritSearchStem(lemma).includes(stemQ)))))
       );
     });
 
@@ -272,12 +317,7 @@ export function generateIndexVerborum(verses: Verse[], targetLang = 'cs'): Index
       // Add matched translations
       if (tk.alignment && tk.alignment.matched_words) {
         for (const [tKey, words] of Object.entries(tk.alignment.matched_words)) {
-          const transMeta = v.translations.find((t) => t.id === tKey);
-          const isMatchLang = transMeta
-            ? transMeta.lang === targetLang
-            : (tKey.startsWith(targetLang) || tKey.includes(targetLang));
-
-          if (isMatchLang) {
+          if (isAlignmentKeyForLang(tKey, v, targetLang)) {
             for (const w of words) {
               const clean = w.replace(/[\[\]]/g, '').trim();
               if (clean && !entry.translationsUsed.includes(clean)) {
@@ -290,6 +330,6 @@ export function generateIndexVerborum(verses: Verse[], targetLang = 'cs'): Index
     }
   }
 
-  // Sort alphabetically by lemma
-  return Array.from(indexMap.values()).sort((a, b) => a.lemma.localeCompare(b.lemma));
+  // Sort in Sanskrit alphabetical order (varṇamālā)
+  return Array.from(indexMap.values()).sort((a, b) => sanskritCompare(a.lemma, b.lemma));
 }

@@ -1,5 +1,8 @@
 import { Token } from '../types/schema.ts';
 
+// Leading/trailing punctuation incl. Czech/German typographic quotes („“ ‚‘ »«) and ellipsis
+const EDGE_PUNCTUATION = /^[.,;:!?()[\]"'\-–—„“”‚‘’»«›‹…]+|[.,;:!?()[\]"'\-–—„“”‚‘’»«›‹…]+$/g;
+
 /**
  * Splits a translation string into clean words/tokens suitable for interactive alignment.
  * Preserves clean word representations while ignoring bracketed notes.
@@ -12,7 +15,7 @@ export function tokenizeTranslation(translationText: string): string[] {
   // Split on whitespace while stripping trailing/leading punctuation
   const rawWords = translationText.trim().split(/\s+/);
   return rawWords
-    .map((w) => w.replace(/^[.,;:!?()[\]"'\-–—]+|[.,;:!?()[\]"'\-–—]+$/g, '').trim())
+    .map((w) => w.replace(EDGE_PUNCTUATION, '').trim())
     .filter((w) => w.length > 0);
 }
 
@@ -98,8 +101,15 @@ export function getBoundTokensForWord(
  * Automatically suggests bindings between tokens and translation words
  * based on token vocabulary and contextual meanings.
  */
-export function autoSuggestBindings(tokens: Token[], translationId: string, translationText: string): void {
+export function autoSuggestBindings(
+  tokens: Token[],
+  translationId: string,
+  translationText: string,
+  lang?: string
+): void {
   const words = tokenizeTranslation(translationText);
+  // Language of the translation: explicit, or the "<lang>_" prefix of the translation id
+  const targetLang = lang || translationId.split('_')[0] || 'cs';
 
   for (const tk of tokens) {
     if (!tk.alignment) {
@@ -111,18 +121,20 @@ export function autoSuggestBindings(tokens: Token[], translationId: string, tran
 
     const searchTerms: string[] = [];
 
+    const entry = tk.vocabulary?.meanings_by_lang?.[targetLang];
+    const legacyContext = targetLang === 'cs' ? tk.vocabulary?.contextual_meaning_cs
+      : (targetLang === 'en' ? tk.vocabulary?.contextual_meaning_en : undefined);
+    const legacyAlts = targetLang === 'cs' ? tk.vocabulary?.alternative_meanings_cs
+      : (targetLang === 'en' ? tk.vocabulary?.alternative_meanings_en : undefined);
+
     // Contextual meaning
-    const csContext = tk.vocabulary?.meanings_by_lang?.cs?.contextual ||
-                      tk.vocabulary?.contextual_meaning_cs;
-    if (csContext) {
-      searchTerms.push(...tokenizeTranslation(csContext));
+    const context = entry?.contextual || legacyContext;
+    if (context) {
+      searchTerms.push(...tokenizeTranslation(context));
     }
 
     // Alternative meanings
-    const csAlts = tk.vocabulary?.meanings_by_lang?.cs?.alternatives ||
-                   tk.vocabulary?.alternative_meanings_cs ||
-                   [];
-    for (const alt of csAlts) {
+    for (const alt of entry?.alternatives || legacyAlts || []) {
       searchTerms.push(...tokenizeTranslation(alt));
     }
 

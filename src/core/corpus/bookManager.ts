@@ -1,4 +1,6 @@
-import { Verse, SanskritDocument } from '../types/schema.ts';
+import { Verse, SanskritDocument, Token, getVerseCommentaries } from '../types/schema.ts';
+import { getScriptText } from '../transliteration/engine.ts';
+import { escapeHtml } from '../utils/html.ts';
 import { defaultSanskritAdapter } from '../adapters/sanskritAdapter.ts';
 import { transliterateLipi } from '../lemmatizer/vidyutAdapter.ts';
 import { analyzeSanskritWord } from '../lemmatizer/sanskritLemmatizer.ts';
@@ -129,12 +131,21 @@ export function bulkImportText(rawText: string, options: BulkImportOptions = {})
     let verseNumber = `${numberPrefix}${currentNum}`;
     let cleanedText = chunk;
 
-    const numMatch = chunk.match(/(?:॥|\|\|)\s*([0-9०-९.]+)\s*(?:॥|\|\|)/) ||
-                     chunk.match(/^\[([0-9०-९.]+)\]/) ||
-                     chunk.match(/^([0-9०-९.]+)\.?\s+/);
+    // Verse number inside double dandas stays part of the text (traditional layout);
+    // a leading "[12]" or "12." marker is removed from the verse text.
+    const dandaMatch = chunk.match(/(?:॥|\|\|)\s*([0-9०-९]+(?:\.[0-9०-९]+)*)\s*(?:॥|\|\|)/);
+    const leadingMatch = chunk.match(/^\[([0-9०-९]+(?:\.[0-9०-९]+)*)\]\s*/) ||
+                         chunk.match(/^([0-9०-९]+(?:\.[0-9०-९]+)*)\.?\s+/);
+    const numMatch = dandaMatch || leadingMatch;
 
     if (numMatch && numMatch[1]) {
       verseNumber = numMatch[1];
+      if (!dandaMatch && leadingMatch) {
+        cleanedText = chunk.slice(leadingMatch[0].length);
+      }
+      // Continue automatic numbering after an explicit plain integer ("12" -> next is 13)
+      const asciiNum = numMatch[1].replace(/[०-९]/g, (d) => String('०१२३४५६७८९'.indexOf(d)));
+      currentNum = /^\d+$/.test(asciiNum) ? parseInt(asciiNum, 10) + 1 : currentNum + 1;
     } else {
       currentNum++;
     }
@@ -177,57 +188,7 @@ export function bulkImportText(rawText: string, options: BulkImportOptions = {})
       detectedMeter = '';
     }
 
-    // Generate tokens from words
-    const words = iastText
-      .replace(/[।॥|0-9०-९.,!?;:[\]()]/g, ' ')
-      .trim()
-      .split(/\s+/)
-      .filter((w) => w.length > 0);
-
-    const tokens = words.map((w, wIdx) => {
-      let wordDeva = '';
-      try {
-        wordDeva = transliterateLipi(w, 'Iast', 'Devanagari');
-      } catch {
-        wordDeva = defaultSanskritAdapter.transliterate(w, 'iast', 'devanagari');
-      }
-
-      const morphs = analyzeSanskritWord(w);
-      const firstMorph = morphs[0];
-
-      return {
-        id: `t_${i + 1}_${wIdx + 1}`,
-        text: {
-          devanagari: wordDeva,
-          iast: w,
-          cs_phonetic: defaultSanskritAdapter.transliterate(wordDeva, 'devanagari', 'cs_phonetic')
-        },
-        lemma: firstMorph?.lemma || w.toLowerCase(),
-        grammar: firstMorph ? {
-          pos: firstMorph.pos,
-          case: firstMorph.case,
-          number: firstMorph.number,
-          gender: firstMorph.gender,
-          root: firstMorph.root,
-          stem: firstMorph.stem,
-          person: firstMorph.person,
-          tense: firstMorph.tense,
-          voice: firstMorph.voice,
-          label_cs: firstMorph.label_cs,
-          label_en: firstMorph.label_en
-        } : undefined,
-        vocabulary: firstMorph && firstMorph.pos === 'indeclinable' ? {
-          meanings_by_lang: {
-            cs: { contextual: firstMorph.label_cs, alternatives: [] },
-            en: { contextual: firstMorph.label_en, alternatives: [] }
-          },
-          contextual_meaning_cs: firstMorph.label_cs
-        } : undefined,
-        alignment: {
-          matched_words: {}
-        }
-      };
-    });
+    const tokens = createTokensFromIast(iastText, `t_${i + 1}`);
 
     const newVerse: Verse = {
       id: `verse_imp_${Date.now()}_${i + 1}`,
@@ -270,10 +231,72 @@ export function bulkImportText(rawText: string, options: BulkImportOptions = {})
   return verses;
 }
 
+/**
+ * Splits an IAST verse text into word tokens with Devanagari, Czech phonetic form and a
+ * first-guess morphological analysis from the built-in lemmatizer. Token ids are
+ * `${idPrefix}_1`, `${idPrefix}_2`, …
+ */
+export function createTokensFromIast(iastText: string, idPrefix = 't'): Token[] {
+  const words = iastText
+    .replace(/[।॥|0-9०-९.,!?;:[\]()"„“”‚‘’]/g, ' ')
+    .trim()
+    .split(/\s+/)
+    .filter((w) => w.length > 0);
+
+  return words.map((w, wIdx) => {
+    const wordDeva = transliterateLipi(w, 'iast', 'devanagari');
+    const firstMorph = analyzeSanskritWord(w)[0];
+
+    return {
+      id: `${idPrefix}_${wIdx + 1}`,
+      text: {
+        devanagari: wordDeva,
+        iast: w,
+        cs_phonetic: defaultSanskritAdapter.transliterate(w, 'iast', 'cs_phonetic')
+      },
+      lemma: firstMorph?.lemma || w.toLowerCase(),
+      grammar: firstMorph ? {
+        pos: firstMorph.pos,
+        case: firstMorph.case,
+        number: firstMorph.number,
+        gender: firstMorph.gender,
+        root: firstMorph.root,
+        stem: firstMorph.stem,
+        person: firstMorph.person,
+        tense: firstMorph.tense,
+        voice: firstMorph.voice,
+        label_cs: firstMorph.label_cs,
+        label_en: firstMorph.label_en
+      } : undefined,
+      // Only indeclinables carry a dictionary meaning in the built-in lemmatizer;
+      // for other words the grammar label is not a meaning and is not copied here.
+      vocabulary: firstMorph && firstMorph.pos === 'indeclinable' ? {
+        meanings_by_lang: {
+          cs: { contextual: firstMorph.label_cs, alternatives: [] },
+          en: { contextual: firstMorph.label_en, alternatives: [] }
+        },
+        contextual_meaning_cs: firstMorph.label_cs
+      } : undefined,
+      alignment: {
+        matched_words: {}
+      }
+    };
+  });
+}
+
 export interface CorpusFilter {
   book?: string;
   chapter?: string;
   query?: string;
+}
+
+/**
+ * Lower-cases and strips Latin diacritics (ā→a, ṛ→r, ś→s, č→c …) so that searches like
+ * "krsna" find "kṛṣṇa". Devanagari vowel signs are combining marks too, but lie outside
+ * U+0300–U+036F and are therefore preserved.
+ */
+export function foldForSearch(text: string): string {
+  return text.normalize('NFD').replace(/[\u0300-\u036F]/g, '').toLowerCase().normalize('NFC');
 }
 
 /**
@@ -288,16 +311,13 @@ export function filterCorpus(verses: Verse[], filter: CorpusFilter): Verse[] {
       return false;
     }
     if (filter.query && filter.query.trim()) {
-      const q = filter.query.trim().toLowerCase();
-      const numMatch = v.number.toLowerCase().includes(q);
-      const devaText = typeof v.scripts.devanagari === 'string' ? v.scripts.devanagari : v.scripts.devanagari.text;
-      const iastText = typeof v.scripts.iast === 'string' ? v.scripts.iast : v.scripts.iast.text;
-      const textMatch = devaText.toLowerCase().includes(q) || iastText.toLowerCase().includes(q);
-      const transMatch = v.translations.some((t) => t.text.toLowerCase().includes(q));
+      const q = foldForSearch(filter.query.trim());
+      const has = (value?: string) => Boolean(value) && foldForSearch(value!).includes(q);
+      const numMatch = has(v.number);
+      const textMatch = has(getScriptText(v.scripts.devanagari)) || has(getScriptText(v.scripts.iast));
+      const transMatch = v.translations.some((t) => has(t.text));
       const tokenMatch = v.tokens.some(
-        (tk) => tk.text.iast.toLowerCase().includes(q) ||
-                tk.text.devanagari.includes(q) ||
-                (tk.lemma && tk.lemma.toLowerCase().includes(q))
+        (tk) => has(tk.text.iast) || has(tk.text.devanagari) || has(tk.lemma)
       );
       if (!numMatch && !textMatch && !transMatch && !tokenMatch) {
         return false;
@@ -357,7 +377,16 @@ export function exportCorpusSubset(
                           tk.vocabulary?.contextual_meaning_cs ||
                           '';
           const gram = tk.grammar?.label_cs || '';
-          md += `| ${tk.text.devanagari} (${tk.text.iast}) | ${tk.lemma || '—'} | ${gram || '—'} | ${meaning || '—'} |\n`;
+          md += `| ${mdCell(`${tk.text.devanagari} (${tk.text.iast})`)} | ${mdCell(tk.lemma || '—')} | ${mdCell(gram || '—')} | ${mdCell(meaning || '—')} |\n`;
+        }
+        md += `\n`;
+      }
+      const commentaries = getVerseCommentaries(v);
+      if (commentaries.length > 0) {
+        md += `**Komentáře:**\n`;
+        for (const c of commentaries) {
+          const meta = [c.tradition, c.title, c.lang].filter(Boolean).join(', ');
+          md += `- **${c.author}**${meta ? ` (${meta})` : ''}: ${c.text.replace(/\s*\n\s*/g, ' ')}${c.source ? ` — *${c.source}*` : ''}\n`;
         }
         md += `\n`;
       }
@@ -449,6 +478,10 @@ export function exportCorpusSubset(
       text-align: left;
     }
     .token-table th { background: #f8f5ee; color: var(--primary); }
+    .commentary { margin-top: 0.9rem; padding: 0.6rem 0.9rem; border-left: 3px solid var(--border); }
+    .commentary-text { white-space: pre-line; margin-top: 0.25rem; }
+    .commentary-text[lang="sa"] { font-family: 'Tiro Devanagari Sanskrit', 'Noto Serif Devanagari', serif; }
+    .commentary-source { font-size: 0.8rem; color: var(--text-muted); font-style: italic; margin-top: 0.25rem; }
     @media print {
       body { max-width: 100%; margin: 0; padding: 1cm; }
       .verse-card { page-break-inside: avoid; border: 1px solid #ccc; box-shadow: none; }
@@ -513,6 +546,16 @@ export function exportCorpusSubset(
       </table>`
           : ''
       }
+      ${getVerseCommentaries(v)
+        .map(
+          (c) => `
+        <div class="commentary">
+          <strong>${escapeHtml(c.author)}</strong>${c.tradition ? ` <em>(${escapeHtml(c.tradition)})</em>` : ''}${c.title ? ` – ${escapeHtml(c.title)}` : ''}
+          <div class="commentary-text"${c.lang === 'sa' ? ' lang="sa"' : ''}>${escapeHtml(c.text)}</div>
+          ${c.source ? `<div class="commentary-source">${escapeHtml(c.source)}</div>` : ''}
+        </div>`
+        )
+        .join('')}
     </div>`;
     })
     .join('')}
@@ -520,11 +563,7 @@ export function exportCorpusSubset(
 </html>`;
 }
 
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
+/** Escapes a value for a Markdown table cell (pipes and line breaks). */
+function mdCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\s*\n\s*/g, ' ');
 }
