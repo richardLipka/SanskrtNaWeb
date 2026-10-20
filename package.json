@@ -1,0 +1,48 @@
+{
+  "name": "sanskrt-na-web",
+  "version": "1.0.0",
+  "description": "Modulární sanskrtská knihovna, WebAssembly lemmatizátor (Vidyut), 5-vrstvá čtečka a překladatelská CAT aplikace s podporou LLM a víceautorských komentářů.",
+  "type": "module",
+  "license": "MIT",
+  "author": "Richard Lipka <lipka@kiv.zcu.cz>",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/richardLipka/SanskrtNaWeb.git"
+  },
+  "main": "./dist/lib/sanskrt-core.umd.js",
+  "module": "./dist/lib/sanskrt-core.es.js",
+  "exports": {
+    ".": {
+      "import": "./dist/lib/sanskrt-core.es.js",
+      "require": "./dist/lib/sanskrt-core.umd.js"
+    },
+    "./lib": {
+      "import": "./dist/lib/sanskrt-core.es.js",
+      "require": "./dist/lib/sanskrt-core.umd.js"
+    },
+    "./components": {
+      "import": "./dist/lib/sanskrt-core.es.js"
+    }
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build && vite build --config vite.config.lib.ts",
+    "build:app": "tsc --noEmit && vite build",
+    "build:lib": "vite build --config vite.config.lib.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "vidyut:check": "node tools/vidyut-harness/check-upstream.mjs",
+    "vidyut:test": "node tools/vidyut-harness/harness-test.mjs"
+  },
+  "dependencies": {
+    "@siva-sh/vidyut": "^0.3.0",
+    "zod": "^3.24.2"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.5",
+    "happy-dom": "^21.0.3",
+    "typescript": "^5.7.3",
+    "vite": "^6.2.0",
+    "vitest": "^3.0.7"
+  }
+}

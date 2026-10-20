@@ -1,0 +1,61 @@
+{
+  "version": "2.0.0",
+  "theme": "parchment",
+  "layers": {
+    "devanagari": {
+      "visible": true,
+      "version": "standard"
+    },
+    "transliteration": {
+      "visible": true,
+      "version": "iast"
+    },
+    "translation": {
+      "visible": true,
+      "activeLang": "cs",
+      "activeTypes": [
+        "fluent",
+        "literal"
+      ]
+    }
+  },
+  "czechRules": {
+    "rSyllabic": "r",
+    "rSyllabicLong": "rí",
+    "lSyllabic": "l",
+    "sibilantPalatal": "š",
+    "sibilantRetroflex": "š",
+    "cPalatal": "č",
+    "chAspirated": "čh",
+    "jAffricate": "dž",
+    "jhAspirated": "džh",
+    "ySemivowel": "j",
+    "vSemivowel": "v",
+    "longVowels": "czech_accents",
+    "anusvaraMode": "simple_m",
+    "visargaMode": "h",
+    "customWordOverrides": {
+      "yoga": "jóga",
+      "yogaḥ": "jógah",
+      "yoge": "józe",
+      "yogin": "jógín",
+      "yogī": "jógí",
+      "āsana": "ásana",
+      "prāṇāyāma": "pránájáma",
+      "samādhi": "samádhi",
+      "samādhiḥ": "samádhih",
+      "patañjali": "pataňdžali",
+      "patañjaliḥ": "pataňdžalih",
+      "haṭha": "hatha",
+      "kuṇḍalinī": "kundaliní",
+      "om": "óm",
+      "oṃ": "óm"
+    }
+  },
+  "defaultDictionary": "cologne_mw",
+  "preserveManualEdits": true,
+  "fontSizeDevanagari": 24,
+  "fontSizeTransliteration": 16,
+  "fontFamilyDevanagari": "Tiro Devanagari Sanskrit, Noto Serif Devanagari, serif",
+  "autoSaveToLocalStorage": true
+}

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="cs" data-theme="parchment">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sanskrt Na Web – 3-Vrstvá čtečka a editor jógových textů</title>
+  <link rel="stylesheet" href="./src/style.css">
+</head>
+<body>
+  <!-- Application Header -->
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="title-group">
+        <h1 id="doc-title">Sanskrt Na Web</h1>
+        <p id="doc-subtitle">Modulární sanskrtská knihovna, 5-vrstvá čtečka a překladatelská CAT aplikace s WebAssembly</p>
+      </div>
+
+      <div class="header-actions">
+        <!-- Controlled CSS Theme Selector -->
+        <label style="font-size: 0.8rem; font-weight: 600; text-transform: uppercase;">
+          Vzhled:
+          <select id="theme-selector" class="theme-select" title="Vyberte CSS vzhled a šablonu">
+            <option value="parchment" selected>📜 Tradiční rukopisný (Parchment)</option>
+            <option value="dark">🌙 Moderní tmavý (Dark)</option>
+            <option value="ashram">🌅 Šafrán & Terakota (Ashram)</option>
+            <option value="academic">🏛️ Akademický čistý (Academic)</option>
+          </select>
+        </label>
+
+        <!-- Separate Document and Settings Disk Actions -->
+        <button id="btn-export-doc" class="btn btn-primary" title="Uložit text a verše jako JSON na disk">
+          💾 Uložit text (JSON)
+        </button>
+        <button id="btn-import-doc" class="btn btn-secondary" title="Načíst text ze souboru JSON">
+          📂 Otevřít text
+        </button>
+        <button id="btn-export-settings" class="btn btn-outline" title="Uložit konfiguraci a pravidla na disk">
+          ⚙️ Uložit pravidla
+        </button>
+        <button id="btn-import-settings" class="btn btn-outline" title="Načíst konfiguraci ze souboru">
+          📥 Načíst pravidla
+        </button>
+
+        <!-- Hidden file inputs -->
+        <input type="file" id="file-input-doc" accept=".json" style="display: none;">
+        <input type="file" id="file-input-settings" accept=".json" style="display: none;">
+        <input type="file" id="file-input-table" accept=".json" style="display: none;">
+      </div>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- View Mode Tabs: Two Distinct Applications + Utilities -->
+    <nav class="tab-nav">
+      <button class="tab-btn active" id="tab-interactive">👁️ Vizualizační čtečka (Reader)</button>
+      <button class="tab-btn" id="tab-editor">✏️ Překladová CAT aplikace (Editor)</button>
+      <button class="tab-btn" id="tab-sargeant">📄 Tiskový rozbor (Sargeant)</button>
+      <button class="tab-btn" id="tab-transliteration">⌨️ Znakové tabulky & Slovníky (Vidyut)</button>
+    </nav>
+
+    <!-- Controlled 3-Layer Control Bar -->
+    <section class="three-layer-bar" id="view-controls">
+      <div class="layers-grid">
+        <!-- Layer 1: Devanagari -->
+        <div class="layer-config-card">
+          <div class="layer-config-header">
+            <label class="layer-title-label">
+              <input type="checkbox" id="layer-deva-toggle" checked> 1. Dévanágarí
+            </label>
+          </div>
+          <select id="layer-deva-version" class="layer-subselect">
+            <option value="standard" selected>Souvislý text (tradiční)</option>
+            <option value="padaccheda">Padaccheda (oddělená slova)</option>
+          </select>
+        </div>
+
+        <!-- Layer 2: Transliteration -->
+        <div class="layer-config-card">
+          <div class="layer-config-header">
+            <label class="layer-title-label">
+              <input type="checkbox" id="layer-translit-toggle" checked> 2. Transliterace
+            </label>
+          </div>
+          <select id="layer-translit-version" class="layer-subselect">
+            <option value="iast" selected>IAST (mezinárodní akademická)</option>
+            <option value="cs_phonetic">Český fonetický přepis (Zbavitel/Chmelař)</option>
+            <option value="iast_padaccheda">IAST Padaccheda (rozpad spřežek)</option>
+          </select>
+        </div>
+
+        <!-- Layer 3: Translation -->
+        <div class="layer-config-card">
+          <div class="layer-config-header">
+            <label class="layer-title-label">
+              <input type="checkbox" id="layer-trans-toggle" checked> 3. Překlad
+            </label>
+          </div>
+          <select id="layer-trans-lang" class="layer-subselect">
+            <option value="cs" selected>Český překlad (všechny verze)</option>
+            <option value="cs_fluent">Pouze plynulý český</option>
+            <option value="cs_literal">Pouze doslovný český</option>
+            <option value="en">English (All translations)</option>
+            <option value="all">Všechny jazyky a překlady</option>
+          </select>
+        </div>
+
+        <!-- Layer 4: Metre & Rhythm (Chandas) -->
+        <div class="layer-config-card">
+          <div class="layer-config-header">
+            <label class="layer-title-label">
+              <input type="checkbox" id="layer-meter-toggle" checked> 4. Metrum & rytmus
+            </label>
+          </div>
+          <select id="layer-meter-view" class="layer-subselect">
+            <option value="full" selected>Metrum + slabiky (Laghu/Guru)</option>
+            <option value="name_only">Pouze název metra</option>
+          </select>
+        </div>
+
+        <!-- Layer 5: Commentaries & Exegesis (Bhāṣya & Ṭīkā) -->
+        <div class="layer-config-card">
+          <div class="layer-config-header">
+            <label class="layer-title-label">
+              <input type="checkbox" id="layer-comm-toggle" checked> 5. Komentáře & výklady
+            </label>
+          </div>
+          <select id="layer-comm-view" class="layer-subselect">
+            <option value="simultaneous" selected>Současné zobrazení (všechny)</option>
+            <option value="sanskrit_only">Pouze sanskrtské (Śaṅkara/Rāmānuja)</option>
+            <option value="vernacular_only">Pouze překladatelské poznámky</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display: flex; justify-content: flex-end; margin-top: 0.85rem;">
+        <button id="btn-print-view" class="btn btn-outline" title="Vytisknout aktuální text nebo uložit do PDF">
+          🖨️ Tisknout / PDF (Winthrop Sargeant)
+        </button>
+      </div>
+    </section>
+
+    <!-- Transliteration Tester, Rules & Character Tables Panel -->
+    <section class="tester-panel" id="panel-transliteration" style="display: none;">
+      <h3 style="margin-bottom: 0.5rem;">Znakové tabulky Dévanágarí a pravidla transliterace</h3>
+      <p style="font-size: 0.9rem; color: var(--text-secondary); margin-bottom: 1rem;">
+        Základní znakování a složené ligatury jsou v systému odděleny. Můžete si prohlédnout kompletní mapování a upravit pravidla.
+      </p>
+
+      <!-- Sub-tabs for Character Tables -->
+      <div class="table-tabs">
+        <button class="btn btn-primary" id="btn-tab-chars-base">Základní znakování</button>
+        <button class="btn btn-outline" id="btn-tab-chars-ligatures">Ligatury a spřežky (Samyukta)</button>
+        <button class="btn btn-outline" id="btn-export-table">💾 Uložit znakovou tabulku (JSON)</button>
+        <button class="btn btn-outline" id="btn-import-table">📥 Načíst znakovou tabulku</button>
+      </div>
+
+      <!-- Character Table Inspector -->
+      <div class="char-table-container">
+        <div id="char-grid-display" class="char-grid"></div>
+      </div>
+
+      <h4 style="margin: 1.25rem 0 0.5rem;">Fonetická pravidla pro český přepis:</h4>
+      <div class="rule-config-box">
+        <label>
+          Slabičné ṛ:
+          <select id="rule-r-syllabic">
+            <option value="r" selected>r (např. vrtti, kršna)</option>
+            <option value="ri">ri (např. vritti, krišna)</option>
+            <option value="ṛ">ṛ (ponechat IAST)</option>
+          </select>
+        </label>
+
+        <label>
+          Dlouhé samohlásky:
+          <select id="rule-long-vowels">
+            <option value="czech_accents" selected>České čárky (á, í, ú)</option>
+            <option value="iast_macrons">IAST makrony (ā, ī, ū)</option>
+          </select>
+        </label>
+
+        <label>
+          Palatální c:
+          <select id="rule-c-palatal">
+            <option value="č" selected>č (např. čitta, čakra)</option>
+            <option value="c">c (ponechat c)</option>
+          </select>
+        </label>
+
+        <label>
+          Afrikáta j:
+          <select id="rule-j-affricate">
+            <option value="dž" selected>dž (např. radža, džňána)</option>
+            <option value="j">j (ponechat j)</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="tester-grid" style="margin-top: 1.25rem;">
+        <div class="tester-col">
+          <label for="test-input-deva">Živý test: Vstup v Dévanágarí:</label>
+          <textarea id="test-input-deva" class="tester-textarea" placeholder="Vložte text v dévanágarí">योगश्चित्तवृत्तिनिरोधः</textarea>
+        </div>
+        <div class="tester-col">
+          <label for="test-output-iast">IAST transliterace:</label>
+          <textarea id="test-output-iast" class="tester-textarea" readonly></textarea>
+        </div>
+        <div class="tester-col">
+          <label for="test-output-cs">Český fonetický přepis:</label>
+          <textarea id="test-output-cs" class="tester-textarea" readonly></textarea>
+        </div>
+      </div>
+
+      <!-- Integrated Vidyut WebAssembly Sanskrit Lemmatizer & Sandhi Engine -->
+      <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.5rem; margin: 1.5rem 0 0.5rem;">
+        <h4 style="margin: 0;">🔍 WebAssembly lemmatizátor, morfologie & sandhi (Ambuda Vidyut):</h4>
+        <span style="font-size: 0.78rem; background: var(--bg-secondary); border: 1px solid var(--accent-gold); border-radius: var(--radius-sm); padding: 2px 8px; color: var(--accent-gold);">
+          ⚡ Powered by <a href="https://github.com/ambuda-org/vidyut" target="_blank" rel="noopener noreferrer" style="color: inherit; text-decoration: underline;">Ambuda Vidyut</a> (WASM, MIT License)
+        </span>
+      </div>
+      <p style="font-size: 0.88rem; color: var(--text-secondary); margin-bottom: 0.75rem;">
+        Běží lokálně ve WebAssembly přímo v prohlížeči. Podporuje morfologické určení kmenů a kořenů (*dhātu*), rozklad sandhiových spřežek (*padaccheda*) i metrickou váhu slabik (*laghu/guru*):
+      </p>
+      <div style="display: flex; gap: 0.75rem; flex-wrap: wrap; margin-bottom: 0.75rem;">
+        <input type="text" id="lemmatizer-input" placeholder="např. yogasya, karmaṇi, karoti..." class="tester-textarea" style="max-width: 340px; min-height: auto; padding: 0.5rem 0.75rem;" value="yogasya">
+        <button id="btn-run-lemmatize" class="btn btn-primary">Analyzovat tvar</button>
+      </div>
+      <div id="lemmatizer-results" style="background: var(--bg-secondary); border: 1px solid var(--bg-card-border); border-radius: var(--radius-sm); padding: 0.85rem; font-size: 0.92rem;"></div>
+
+      <!-- Offline Vidyut Kosha & Cheda Datasets Downloader (IndexedDB) -->
+      <div class="kosha-downloader-card" style="margin-top: 1.25rem; background: var(--bg-card); border: 1px solid var(--bg-card-border); border-radius: var(--radius-sm); padding: 1rem;">
+        <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 0.5rem;">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <span style="font-size: 1.2rem;">📦</span>
+            <strong style="font-size: 0.95rem; color: var(--text-primary);">Plná offline slovníková databáze (Vidyut-Kosha & Cheda):</strong>
+          </div>
+          <span id="kosha-cache-badge" class="badge" style="font-size: 0.76rem; background: var(--bg-secondary); border: 1px solid var(--accent-gold); color: var(--accent-gold); padding: 2px 8px; border-radius: 12px;">
+            Kontrola mezipaměti...
+          </span>
+        </div>
+
+        <div style="background: rgba(217, 119, 6, 0.08); border-left: 3px solid var(--accent-gold); padding: 0.6rem 0.85rem; border-radius: var(--radius-sm); margin-bottom: 0.85rem; font-size: 0.85rem; line-height: 1.45; color: var(--text-secondary);">
+          <strong style="color: var(--accent-gold);">⚠️ Upozornění na velikost dat a případné delší načítání:</strong><br>
+          Oficiální archiv slovníků (<code>data-0.4.0.zip</code>) obsahuje cca <strong>18,5 MB komprimovaných dat</strong> (~55 MB po rozbalení v paměti). Zahrnuje kompletní hesláře Monier-Williams (1899), V. S. Apte (1957), Śabda-Sāgara, Vācaspatyam a přes 10 milionů vygenerovaných tvarů ze sanskrtské gramatiky.
+          <br><br>
+          Stažení do mezipaměti prohlížeče (IndexedDB) může v závislosti na rychlosti vašeho internetového připojení trvat <strong>5 až 40 sekund</strong>. Po stažení zůstane slovník trvale uložen v lokální paměti prohlížeče a funguje plně offline.
+        </div>
+
+        <!-- Controls & Status -->
+        <div style="display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; margin-bottom: 0.5rem;">
+          <button id="btn-download-kosha" class="btn btn-primary" style="font-size: 0.85rem; padding: 0.4rem 0.85rem;">
+            📥 Stáhnout slovník do prohlížeče (~18,5 MB)
+          </button>
+          <label class="btn btn-outline" style="font-size: 0.85rem; padding: 0.4rem 0.85rem; cursor: pointer; margin: 0;">
+            📂 Vybrat ZIP z disku
+            <input type="file" id="input-upload-kosha-zip" accept=".zip" style="display: none;">
+          </label>
+          <button id="btn-export-kosha" class="btn btn-outline" style="font-size: 0.85rem; padding: 0.4rem 0.85rem; display: none;">
+            💾 Uložit ZIP na disk
+          </button>
+          <button id="btn-delete-kosha" class="btn btn-danger" style="font-size: 0.85rem; padding: 0.4rem 0.85rem; display: none;">
+            🗑️ Vymazat mezipaměť
+          </button>
+        </div>
+
+        <!-- Progress bar and log -->
+        <div id="kosha-progress-container" style="display: none; margin-top: 0.6rem;">
+          <div style="background: var(--bg-secondary); border-radius: 4px; overflow: hidden; height: 10px; width: 100%; border: 1px solid var(--bg-card-border);">
+            <div id="kosha-progress-bar" style="background: linear-gradient(90deg, var(--accent-gold), var(--accent-terracotta)); height: 100%; width: 0%; transition: width 0.2s ease;"></div>
+          </div>
+          <div id="kosha-progress-text" style="font-size: 0.8rem; color: var(--text-muted); margin-top: 0.3rem;">Připravuji...</div>
+        </div>
+
+        <!-- Archive Inspection & File List -->
+        <div id="kosha-details-container" style="display: none; margin-top: 0.75rem; padding-top: 0.6rem; border-top: 1px dashed var(--bg-card-border); font-size: 0.82rem; color: var(--text-secondary);">
+          <div id="kosha-details-info"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Verses Rendering Area (Interactive View) -->
+    <section id="verses-container"></section>
+
+    <!-- Sargeant Print Area (Sargeant View) -->
+    <section id="sargeant-container" style="display: none;"></section>
+
+    <!-- Verse Editor & Book Management Area (Editor View) -->
+    <section id="editor-container" style="display: none;">
+      <sanskrit-editor id="main-sanskrit-editor"></sanskrit-editor>
+    </section>
+  </main>
+
+  <!-- Word Analysis Popup Dialog -->
+  <div id="word-modal" class="modal-overlay" style="display: none;">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div class="modal-title-group">
+          <h3 id="modal-word-deva">योगः</h3>
+          <span id="modal-word-iast">yogaḥ</span>
+        </div>
+        <button id="modal-close-btn" class="btn-close" aria-label="Zavřít">&times;</button>
+      </div>
+      <div class="modal-body">
+        <div class="modal-row" id="modal-row-meaning">
+          <div class="modal-row-label">Kontextový význam verše:</div>
+          <div class="modal-row-value" id="modal-meaning" style="font-weight: 600;">—</div>
+        </div>
+
+        <div class="modal-row" id="modal-row-grammar">
+          <div class="modal-row-label">Gramatický rozbor:</div>
+          <div class="modal-row-value" id="modal-grammar">—</div>
+        </div>
+
+        <div class="modal-row" id="modal-row-root">
+          <div class="modal-row-label">Kořen (Dhātu) / Kmen (Prātipadika):</div>
+          <div class="modal-row-value" id="modal-root">—</div>
+        </div>
+
+        <div class="modal-row" id="modal-row-meanings">
+          <div class="modal-row-label">Další významy ve slovníku:</div>
+          <div class="modal-row-value" id="modal-alt-meanings">—</div>
+        </div>
+
+        <div class="modal-row" id="modal-row-sandhi" style="display: none;">
+          <div class="modal-row-label">Sandhi poznámka:</div>
+          <div class="modal-row-value" id="modal-sandhi" style="color: var(--accent-terracotta);">—</div>
+        </div>
+
+        <!-- Paninian Prakriya Derivation Tree (vidyut-prakriya) -->
+        <div class="modal-prakriya-section" id="modal-prakriya-section" style="margin-top: 1rem; padding: 0.85rem; background: var(--bg-secondary); border: 1px solid var(--bg-card-border); border-radius: var(--radius-sm); display: none;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.4rem;">
+            <strong style="color: var(--accent-gold-dark); font-size: 0.88rem;">🏛️ Pāṇiniovský derivační strom (vidyut-prakriya / Aṣṭādhyāyī):</strong>
+            <span style="font-size: 0.72rem; color: var(--text-muted);">⚡ Ambuda Vidyut WASM</span>
+          </div>
+          <div id="modal-prakriya-content" style="font-size: 0.84rem;"></div>
+        </div>
+
+        <div class="dict-links">
+          <h4>Ověřené online slovníky a lemmatizátory:</h4>
+          <div class="dict-btn-grid" id="modal-dict-buttons"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script type="module" src="./src/main.ts"></script>
+</body>
+</html>

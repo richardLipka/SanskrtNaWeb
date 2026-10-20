@@ -1,0 +1,479 @@
+{
+  "$schema": "https://sanskrit-viewer.org/schemas/v1/collection.json",
+  "document": {
+    "id": "patanjali-yogasutra-sample",
+    "title": "Patañjaliho Yogasūtra & Bhagavadgītā",
+    "section": "Výběr klíčových jógových veršů (Vícejazyčný)",
+    "author": "Patañjali / Vyāsa",
+    "tradition": "Rāja-yoga & Karma-yoga",
+    "editor": "Jógová redakce",
+    "status": "verified",
+    "defaultLayers": [
+      "devanagari",
+      "transliteration",
+      "translation"
+    ],
+    "notes": "Vícejazyčný vzorový dokument pro ověření 3 vrstev, témat a slovníků."
+  },
+  "verses": [
+    {
+      "id": "pys_1_1",
+      "number": "1.1",
+      "source": {
+        "title": "Yogasūtra 1.1",
+        "url": "https://gretil.sub.uni-goettingen.de/",
+        "citation": "Samādhi-pāda 1.1",
+        "note": "Iniciační aforismus klasické jógy"
+      },
+      "scripts": {
+        "devanagari": {
+          "text": "अथ योगानुशासनम् ॥ १.१ ॥",
+          "mode": "auto",
+          "lastAutoText": "अथ योगानुशासनम् ॥ १.१ ॥"
+        },
+        "devanagari_padaccheda": {
+          "text": "अथ योग-अनुशासनम् ॥ १.१ ॥",
+          "mode": "manual",
+          "lastAutoText": ""
+        },
+        "iast": {
+          "text": "atha yogānuśāsanam || 1.1 ||",
+          "mode": "auto",
+          "lastAutoText": "atha yogānuśāsanam || 1.1 ||"
+        },
+        "iast_padaccheda": {
+          "text": "atha yoga-anuśāsanam || 1.1 ||",
+          "mode": "manual",
+          "lastAutoText": ""
+        },
+        "cs_phonetic": {
+          "text": "atha jógánušásanam || 1.1 ||",
+          "mode": "auto",
+          "lastAutoText": "atha jógánušásanam || 1.1 ||"
+        }
+      },
+      "translations": [
+        {
+          "id": "cs_fluent",
+          "label": "Plynulý český překlad",
+          "lang": "cs",
+          "type": "fluent",
+          "text": "Nyní začíná tradiční výklad jógy."
+        },
+        {
+          "id": "cs_literal",
+          "label": "Doslovný rozbor (Čeština)",
+          "lang": "cs",
+          "type": "literal",
+          "text": "Zde [nyní] [předkládá se] autoritativní předání [učení] jógy."
+        },
+        {
+          "id": "en_bryant",
+          "label": "English Translation (Edwin Bryant)",
+          "lang": "en",
+          "type": "scholarly",
+          "text": "Now, the authoritative exposition of Yoga [is being presented]."
+        },
+        {
+          "id": "en_vivekananda",
+          "label": "English (Swami Vivekananda)",
+          "lang": "en",
+          "type": "fluent",
+          "text": "Now concentration is explained."
+        }
+      ],
+      "tokens": [
+        {
+          "id": "t1_1",
+          "text": {
+            "devanagari": "अथ",
+            "iast": "atha",
+            "cs_phonetic": "atha"
+          },
+          "lemma": "atha",
+          "grammar": {
+            "pos": "indeclinable",
+            "label_cs": "nesklonné, částice",
+            "label_en": "indeclinable, inceptive particle"
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "Nyní, zde",
+                "alternatives": ["nyní tedy", "dále pak", "přistupme k výkladu"]
+              },
+              "en": {
+                "contextual": "Now, auspicious beginning",
+                "alternatives": ["hereafter", "thus", "commencing authority"]
+              }
+            },
+            "contextual_meaning_cs": "Nyní, zde",
+            "alternative_meanings_cs": ["nyní tedy", "dále pak", "přistupme k výkladu"],
+            "etymology": "Značí maṅgala (příznivý počátek) a zahájení studia po předchozí přípravě."
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["Nyní začíná"],
+              "cs_literal": ["Zde", "[nyní]"],
+              "en_bryant": ["Now"],
+              "en_vivekananda": ["Now"]
+            }
+          },
+          "dictionaryLookup": "atha"
+        },
+        {
+          "id": "t1_2",
+          "text": {
+            "devanagari": "योग",
+            "iast": "yoga",
+            "cs_phonetic": "jóga"
+          },
+          "lemma": "yoga",
+          "compound": {
+            "is_compound_member": true,
+            "position": "prefix",
+            "type": "ṣaṣṭhī-tatpuruṣa",
+            "analysis": "yogásya anuśāsanam"
+          },
+          "grammar": {
+            "pos": "noun",
+            "root": "√yuj (spojit, ukáznit, soustředit)",
+            "stem": "yoga",
+            "gender": "masculine",
+            "case": "stem_in_compound",
+            "label_cs": "m. kmen ve složenině (genitiv)",
+            "label_en": "m. stem in compound"
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "jóga (usebrané vědomí)",
+                "alternatives": ["sjednocení", "kázeň mysli", "metoda", "integrované vědomí"]
+              },
+              "en": {
+                "contextual": "yoga (integration of consciousness)",
+                "alternatives": ["union", "meditative absorption", "discipline", "samadhi"]
+              }
+            },
+            "contextual_meaning_cs": "jóga",
+            "alternative_meanings_cs": ["sjednocení", "kázeň mysli", "metoda", "integrované vědomí"],
+            "etymology": "Kořen yuj s primární příponou ghañ."
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["jógy"],
+              "cs_literal": ["jógy"],
+              "en_bryant": ["Yoga"],
+              "en_vivekananda": ["concentration"]
+            }
+          },
+          "dictionaryLookup": "yoga"
+        },
+        {
+          "id": "t1_3",
+          "text": {
+            "devanagari": "अनुशासनम्",
+            "iast": "anuśāsanam",
+            "cs_phonetic": "anušásanam"
+          },
+          "lemma": "anuśāsana",
+          "compound": {
+            "is_compound_member": true,
+            "position": "final"
+          },
+          "grammar": {
+            "pos": "noun",
+            "root": "anu + √śās (poučovat, předávat tradici)",
+            "stem": "anuśāsana",
+            "gender": "neuter",
+            "case": "nominative",
+            "number": "singular",
+            "label_cs": "n. nom. sg.",
+            "label_en": "n. nom. sg."
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "tradiční výklad",
+                "alternatives": ["autoritativní instrukce", "předání nauky", "směrnice"]
+              },
+              "en": {
+                "contextual": "authoritative exposition",
+                "alternatives": ["instruction", "transmitted lineage teaching", "doctrine"]
+              }
+            },
+            "contextual_meaning_cs": "tradiční výklad",
+            "alternative_meanings_cs": ["autoritativní instrukce", "předání nauky", "směrnice praxe"]
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["tradiční výklad"],
+              "cs_literal": ["autoritativní předání [učení]"],
+              "en_bryant": ["authoritative exposition", "is being presented"],
+              "en_vivekananda": ["is explained"]
+            }
+          },
+          "dictionaryLookup": "anuzAsana"
+        }
+      ],
+      "commentary_cs": "Předpona anu- naznačuje následnictví (paramparā) – Patañjali jógu nevymyslel, ale předává tradiční moudrost.",
+      "commentary_by_lang": {
+        "cs": "Předpona anu- naznačuje následnictví (paramparā) – Patañjali jógu nevymyslel, ale předává tradiční moudrost.",
+        "en": "The prefix anu- denotes succession or following a tradition (paramparā)."
+      }
+    },
+    {
+      "id": "pys_1_2",
+      "number": "1.2",
+      "source": {
+        "title": "Yogasūtra 1.2",
+        "url": "https://gretil.sub.uni-goettingen.de/",
+        "citation": "Samādhi-pāda 1.2",
+        "note": "Kanonická definice podstaty jógy"
+      },
+      "scripts": {
+        "devanagari": {
+          "text": "योगश्चित्तवृत्तिनिरोधः ॥ १.२ ॥",
+          "mode": "auto",
+          "lastAutoText": "योगश्चित्तवृत्तिनिरोधः ॥ १.२ ॥"
+        },
+        "devanagari_padaccheda": {
+          "text": "योगः चित्त-वृत्ति-निरोधः ॥ १.२ ॥",
+          "mode": "manual",
+          "lastAutoText": ""
+        },
+        "iast": {
+          "text": "yogaś citta-vṛtti-nirodhaḥ || 1.2 ||",
+          "mode": "auto",
+          "lastAutoText": "yogaś citta-vṛtti-nirodhaḥ || 1.2 ||"
+        },
+        "iast_padaccheda": {
+          "text": "yogaḥ citta-vṛtti-nirodhaḥ || 1.2 ||",
+          "mode": "manual",
+          "lastAutoText": ""
+        },
+        "cs_phonetic": {
+          "text": "jógaš čitta-vrtti-niródhah || 1.2 ||",
+          "mode": "auto",
+          "lastAutoText": "jógaš čitta-vrtti-niródhah || 1.2 ||"
+        }
+      },
+      "translations": [
+        {
+          "id": "cs_fluent",
+          "label": "Plynulý český překlad",
+          "lang": "cs",
+          "type": "fluent",
+          "text": "Jóga je zastavení [nebo uklidnění] proměn mysli."
+        },
+        {
+          "id": "cs_literal",
+          "label": "Doslovný rozbor (Čeština)",
+          "lang": "cs",
+          "type": "literal",
+          "text": "Jóga [je] ustání víření vědomí."
+        },
+        {
+          "id": "en_bryant",
+          "label": "English Translation (Edwin Bryant)",
+          "lang": "en",
+          "type": "scholarly",
+          "text": "Yoga is the stilling of the changing states of the mind."
+        },
+        {
+          "id": "en_vivekananda",
+          "label": "English (Swami Vivekananda)",
+          "lang": "en",
+          "type": "fluent",
+          "text": "Yoga is restraining the mind-stuff (Chitta) from taking various forms (Vrittis)."
+        }
+      ],
+      "tokens": [
+        {
+          "id": "t2_1",
+          "text": {
+            "devanagari": "योगः",
+            "devanagari_in_verse": "योगश्",
+            "iast": "yogaḥ",
+            "iast_in_verse": "yogaś",
+            "cs_phonetic": "jógah"
+          },
+          "lemma": "yoga",
+          "sandhi_note": "ḥ + c -> śc (ścatva sandhi)",
+          "grammar": {
+            "pos": "noun",
+            "root": "√yuj (sjednotit, integrovat)",
+            "stem": "yoga",
+            "gender": "masculine",
+            "case": "nominative",
+            "number": "singular",
+            "label_cs": "m. nom. sg.",
+            "label_en": "m. nom. sg."
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "Jóga",
+                "alternatives": ["stav usebrání", "samādhi", "sjednocení vědomí"]
+              },
+              "en": {
+                "contextual": "Yoga",
+                "alternatives": ["stillness", "absorption", "state of samādhi"]
+              }
+            },
+            "contextual_meaning_cs": "Jóga",
+            "alternative_meanings_cs": ["stav usebrání", "samādhi", "sjednocení vědomí"]
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["Jóga"],
+              "cs_literal": ["Jóga"],
+              "en_bryant": ["Yoga"],
+              "en_vivekananda": ["Yoga"]
+            }
+          },
+          "dictionaryLookup": "yoga"
+        },
+        {
+          "id": "t2_2",
+          "text": {
+            "devanagari": "चित्त",
+            "iast": "citta",
+            "cs_phonetic": "čitta"
+          },
+          "lemma": "citta",
+          "compound": {
+            "is_compound_member": true,
+            "position": "prefix",
+            "type": "ṣaṣṭhī-tatpuruṣa",
+            "analysis": "cittasya vṛttayaḥ"
+          },
+          "grammar": {
+            "pos": "noun",
+            "root": "√cit (vnímat, pozorovat)",
+            "stem": "citta",
+            "gender": "neuter",
+            "case": "stem_in_compound",
+            "label_cs": "n. kmen ve složenině",
+            "label_en": "n. stem in compound"
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "mysli",
+                "alternatives": ["vědomí", "paměťové pole", "mentální aparát (citta)"]
+              },
+              "en": {
+                "contextual": "mind, consciousness",
+                "alternatives": ["mind-stuff", "psyche", "cognitive field"]
+              }
+            },
+            "contextual_meaning_cs": "mysli",
+            "alternative_meanings_cs": ["vědomí", "paměťové pole", "mentální aparát (citta)"]
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["mysli"],
+              "cs_literal": ["vědomí"],
+              "en_bryant": ["mind"],
+              "en_vivekananda": ["mind-stuff (Chitta)"]
+            }
+          },
+          "dictionaryLookup": "citta"
+        },
+        {
+          "id": "t2_3",
+          "text": {
+            "devanagari": "वृत्ति",
+            "iast": "vṛtti",
+            "cs_phonetic": "vrtti"
+          },
+          "lemma": "vṛtti",
+          "compound": {
+            "is_compound_member": true,
+            "position": "middle"
+          },
+          "grammar": {
+            "pos": "noun",
+            "root": "√vṛt (otáčet se, dít se)",
+            "stem": "vṛtti",
+            "gender": "feminine",
+            "case": "stem_in_compound",
+            "label_cs": "f. kmen ve složenině",
+            "label_en": "f. stem in compound"
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "proměn",
+                "alternatives": ["víření mysli", "fluktuace", "funkční stavy", "myšlenkové vlny"]
+              },
+              "en": {
+                "contextual": "changing states, whirlpools",
+                "alternatives": ["fluctuations", "modifications", "vortices of thought"]
+              }
+            },
+            "contextual_meaning_cs": "proměn",
+            "alternative_meanings_cs": ["víření mysli", "fluktuace", "funkční stavy mysli", "myšlenkové vlny"]
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["proměn"],
+              "cs_literal": ["víření"],
+              "en_bryant": ["changing states"],
+              "en_vivekananda": ["taking various forms (Vrittis)"]
+            }
+          },
+          "dictionaryLookup": "vrtti"
+        },
+        {
+          "id": "t2_4",
+          "text": {
+            "devanagari": "निरोधः",
+            "iast": "nirodhaḥ",
+            "cs_phonetic": "niródhah"
+          },
+          "lemma": "nirodha",
+          "compound": {
+            "is_compound_member": true,
+            "position": "final"
+          },
+          "grammar": {
+            "pos": "noun",
+            "root": "ni + √rudh (zadržet, zastavit, omezit)",
+            "stem": "nirodha",
+            "gender": "masculine",
+            "case": "nominative",
+            "number": "singular",
+            "label_cs": "m. nom. sg.",
+            "label_en": "m. nom. sg."
+          },
+          "vocabulary": {
+            "meanings_by_lang": {
+              "cs": {
+                "contextual": "zastavení [nebo uklidnění]",
+                "alternatives": ["ztišení", "kontrola", "ustání", "rozplynutí do klidu"]
+              },
+              "en": {
+                "contextual": "stilling, cessation",
+                "alternatives": ["restraint", "restriction", "quieting", "dissolution"]
+              }
+            },
+            "contextual_meaning_cs": "zastavení [nebo uklidnění]",
+            "alternative_meanings_cs": ["ztišení", "kontrola", "ustání", "rozplynutí do klidu"]
+          },
+          "alignment": {
+            "matched_words": {
+              "cs_fluent": ["zastavení [nebo uklidnění]"],
+              "cs_literal": ["ustání"],
+              "en_bryant": ["stilling"],
+              "en_vivekananda": ["restraining"]
+            }
+          },
+          "dictionaryLookup": "nirodha"
+        }
+      ],
+      "commentary_cs": "Podle komentátora Vyāsy neznamená nirodha násilné potlačení, ale utišení myšlenkových vírů tak, aby se vědomí navrátilo ke své přirozené záři."
+    }
+  ]
+}
