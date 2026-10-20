@@ -4,10 +4,12 @@ const STORAGE_KEY_DOC = 'sanskrit_reader_active_document_v1';
 const STORAGE_KEY_SETTINGS = 'sanskrit_reader_settings_v1';
 
 /**
- * Trigger browser file download for JSON content without needing any server.
+ * Trigger a browser download for text content without needing any server.
+ * The object URL is revoked asynchronously; revoking it synchronously right after
+ * `click()` cancels the download in some browsers (notably Firefox).
  */
-export function downloadJsonFile(filename: string, content: string): void {
-  const blob = new Blob([content], { type: 'application/json;charset=utf-8' });
+export function downloadTextFile(filename: string, content: string | Blob, mimeType = 'text/plain;charset=utf-8'): void {
+  const blob = content instanceof Blob ? content : new Blob([content], { type: mimeType });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
@@ -15,7 +17,23 @@ export function downloadJsonFile(filename: string, content: string): void {
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+/**
+ * Trigger browser file download for JSON content without needing any server.
+ */
+export function downloadJsonFile(filename: string, content: string): void {
+  downloadTextFile(filename, content, 'application/json;charset=utf-8');
+}
+
+/**
+ * Returns a copy of the settings without secrets (LLM API key), suitable for files
+ * that may be shared with other people.
+ */
+export function stripSettingsSecrets(settings: AppSettings): AppSettings {
+  if (!settings.llmConfig?.apiKey) return settings;
+  return { ...settings, llmConfig: { ...settings.llmConfig, apiKey: '' } };
 }
 
 /**
@@ -62,7 +80,7 @@ export async function exportSettings(
   settings: AppSettings,
   preferredFilename = 'sanskrit-settings.json'
 ): Promise<void> {
-  const validated = AppSettingsSchema.parse(settings);
+  const validated = stripSettingsSecrets(AppSettingsSchema.parse(settings));
   const json = JSON.stringify(validated, null, 2);
 
   if (typeof window !== 'undefined' && 'showSaveFilePicker' in window) {

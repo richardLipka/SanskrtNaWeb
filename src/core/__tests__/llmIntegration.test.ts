@@ -207,7 +207,12 @@ Doufám, že to pomůže!`;
 
       const fluent = updated.translations.find((t) => t.type === 'fluent' && t.lang === 'cs');
       expect(fluent?.text).toBe('Nyní začíná posvátné poučení o józe.');
-      expect(updated.commentary_cs).toContain('autoritativní tradici');
+      // Keeps the id of the existing translation so alignments keyed by it stay valid
+      expect(fluent?.id).toBe('cs_fluent');
+      // LLM commentary is added as a structured commentary entry
+      const llmComm = updated.commentaries?.find((c) => c.text.includes('autoritativní tradici'));
+      expect(llmComm).toBeDefined();
+      expect(llmComm?.lang).toBe('cs');
     });
 
     it('applies suggested word alignments to verse tokens', () => {
@@ -224,10 +229,12 @@ Doufám, že to pomůže!`;
       );
 
       const tkAtha = updated.tokens.find((t) => t.id === 't1_1');
-      expect(tkAtha?.alignment.matched_words.cs).toEqual(['Nyní']);
+      // A language code resolves to that language's fluent translation id
+      expect(tkAtha?.alignment.matched_words.cs_fluent).toEqual(['Nyní']);
+      expect(tkAtha?.alignment.matched_words.cs).toBeUndefined();
 
       const tkYoga = updated.tokens.find((t) => t.id === 't1_2');
-      expect(tkYoga?.alignment.matched_words.cs).toEqual(['józe', 'jógy']);
+      expect(tkYoga?.alignment.matched_words.cs_fluent).toEqual(['józe', 'jógy']);
     });
 
     it('applies grammar and diacritic corrections to tokens', () => {

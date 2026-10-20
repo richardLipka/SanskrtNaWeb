@@ -353,7 +353,7 @@ export const AppSettingsSchema = z.object({
     }),
     transliteration: z.object({
       visible: z.boolean().default(true),
-      version: z.enum(['iast', 'cs_phonetic', 'harvard_kyoto', 'iast_padaccheda']).default('iast')
+      version: z.enum(['iast', 'cs_phonetic', 'harvard_kyoto', 'slp1', 'iast_padaccheda']).default('iast')
     }),
     translation: z.object({
       visible: z.boolean().default(true),
@@ -373,7 +373,7 @@ export const AppSettingsSchema = z.object({
   }).default({
     devanagari: { visible: true, version: 'standard' },
     transliteration: { visible: true, version: 'iast' },
-    translation: { visible: true, activeLang: 'cs', activeTypes: ['fluent'] },
+    translation: { visible: true, activeLang: 'cs', activeTypes: ['fluent', 'literal'] },
     meter: { visible: true, showAksharas: true },
     commentary: { visible: true, activeAuthors: [], activeLangs: ['sa', 'cs', 'en'], layout: 'stacked' }
   }),

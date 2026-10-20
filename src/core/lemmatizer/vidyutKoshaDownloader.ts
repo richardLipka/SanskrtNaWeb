@@ -91,6 +91,8 @@ export async function checkKoshaCacheStatus(): Promise<KoshaCacheStatus> {
     const db = await openKoshaDatabase();
     return new Promise((resolve) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(RECORD_KEY);
 
@@ -135,6 +137,8 @@ export async function saveKoshaZipToIndexedDb(
   const db = await openKoshaDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
     const store = tx.objectStore(STORE_NAME);
 
     const record = {
@@ -161,6 +165,8 @@ export async function getKoshaZipFromIndexedDb(): Promise<{ blob: Blob; meta: an
     const db = await openKoshaDatabase();
     return new Promise((resolve, reject) => {
       const tx = db.transaction(STORE_NAME, 'readonly');
+      tx.oncomplete = () => db.close();
+      tx.onabort = () => db.close();
       const store = tx.objectStore(STORE_NAME);
       const req = store.get(RECORD_KEY);
 
@@ -186,6 +192,8 @@ export async function deleteKoshaZipFromIndexedDb(): Promise<void> {
   const db = await openKoshaDatabase();
   return new Promise((resolve, reject) => {
     const tx = db.transaction(STORE_NAME, 'readwrite');
+    tx.oncomplete = () => db.close();
+    tx.onabort = () => db.close();
     const store = tx.objectStore(STORE_NAME);
     const req = store.delete(RECORD_KEY);
     req.onsuccess = () => resolve();
@@ -196,25 +204,53 @@ export async function deleteKoshaZipFromIndexedDb(): Promise<void> {
 /**
  * Light-weight ZIP central directory parser to list filenames inside the archive
  * without needing an external 3rd-party library.
+ *
+ * Reads the End-Of-Central-Directory record and walks the central directory, which is
+ * authoritative (local headers may carry zero sizes when data descriptors are used, and a
+ * byte scan can hit false signatures inside compressed data). Falls back to scanning
+ * local file headers for truncated archives.
  */
 export async function inspectZipArchive(bufferOrBlob: ArrayBuffer | Blob): Promise<string[]> {
   const buffer = bufferOrBlob instanceof Blob ? await bufferOrBlob.arrayBuffer() : bufferOrBlob;
   const view = new DataView(buffer);
+  const decoder = new TextDecoder('utf-8');
   const fileNames: string[] = [];
+  const pushName = (name: string) => {
+    if (name && !name.endsWith('/') && !fileNames.includes(name)) fileNames.push(name);
+  };
 
-  // Scan for ZIP local file header signatures (0x04034b50)
+  // 1. Locate EOCD (0x06054b50) within the last 64 KiB + 22 bytes
+  const minEocd = Math.max(0, buffer.byteLength - 0xffff - 22);
+  let eocd = -1;
+  for (let i = buffer.byteLength - 22; i >= minEocd; i--) {
+    if (view.getUint32(i, true) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+
+  if (eocd >= 0) {
+    const entries = view.getUint16(eocd + 10, true);
+    let offset = view.getUint32(eocd + 16, true);
+    for (let n = 0; n < entries && offset + 46 <= buffer.byteLength; n++) {
+      if (view.getUint32(offset, true) !== 0x02014b50) break;
+      const nameLen = view.getUint16(offset + 28, true);
+      const extraLen = view.getUint16(offset + 30, true);
+      const commentLen = view.getUint16(offset + 32, true);
+      if (offset + 46 + nameLen > buffer.byteLength) break;
+      pushName(decoder.decode(new Uint8Array(buffer, offset + 46, nameLen)));
+      offset += 46 + nameLen + extraLen + commentLen;
+    }
+    if (fileNames.length > 0) return fileNames;
+  }
+
+  // 2. Fallback: scan for local file header signatures (0x04034b50)
   for (let i = 0; i < buffer.byteLength - 30; i++) {
     if (view.getUint32(i, true) === 0x04034b50) {
       const fileNameLength = view.getUint16(i + 26, true);
       const extraFieldLength = view.getUint16(i + 28, true);
-
       if (fileNameLength > 0 && i + 30 + fileNameLength <= buffer.byteLength) {
-        const nameBytes = new Uint8Array(buffer, i + 30, fileNameLength);
-        const decoder = new TextDecoder('utf-8');
-        const name = decoder.decode(nameBytes);
-        if (name && !name.endsWith('/') && !fileNames.includes(name)) {
-          fileNames.push(name);
-        }
+        pushName(decoder.decode(new Uint8Array(buffer, i + 30, fileNameLength)));
       }
       i += 30 + fileNameLength + extraFieldLength - 1;
     }
@@ -324,5 +360,6 @@ export function exportKoshaZipToDisk(blob: Blob, filename = 'data-0.4.0.zip'): v
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  // Revoking synchronously can cancel the download in some browsers
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

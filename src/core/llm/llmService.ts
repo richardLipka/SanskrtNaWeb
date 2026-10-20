@@ -7,7 +7,25 @@ import {
   LLMAlignmentResult,
   LLMGrammarCheckResult
 } from './llmTypes.ts';
-import { Verse, Token, Grammar, getVerseCommentaries } from '../types/schema.ts';
+import { Verse, Token, Grammar, GrammarSchema, getVerseCommentaries } from '../types/schema.ts';
+import { iastToDevanagari } from '../transliteration/engine.ts';
+
+const LANGUAGE_NAMES: Record<string, string> = {
+  cs: 'Czech',
+  en: 'English',
+  sk: 'Slovak',
+  de: 'German',
+  fr: 'French',
+  es: 'Spanish',
+  it: 'Italian',
+  pl: 'Polish',
+  ru: 'Russian'
+};
+
+function languageName(code: string | undefined): string {
+  const key = (code || 'cs').toLowerCase();
+  return LANGUAGE_NAMES[key] || key;
+}
 
 export const LLM_PROVIDER_PRESETS: Record<
   string,
@@ -65,7 +83,7 @@ export function buildSystemPrompt(taskType: LLMTaskType, config: LLMConfig): str
     return config.customSystemPrompt.trim();
   }
 
-  const langName = config.targetLanguage === 'en' ? 'English' : 'Czech';
+  const langName = languageName(config.targetLanguage);
 
   const basePreamble = `You are an elite academic Sanskritologist, classical philologist, and expert literary translator.
 You have native-level command of classical Sanskrit (Pāṇinian grammar, Aṣṭādhyāyī, Sandhi rules, Chandas metrics) and modern literary ${langName}.
@@ -157,8 +175,8 @@ export function buildUserPrompt(
   const deva = typeof v.scripts.devanagari === 'string' ? v.scripts.devanagari : v.scripts.devanagari?.text || '';
   const iast = typeof v.scripts.iast === 'string' ? v.scripts.iast : v.scripts.iast?.text || '';
 
-  const lang = config.targetLanguage === 'en' ? 'en' : 'cs';
-  const langLabel = lang === 'en' ? 'English' : 'Czech (čeština)';
+  const lang = (config.targetLanguage || 'cs').toLowerCase();
+  const langLabel = lang === 'cs' ? 'Czech (čeština)' : languageName(lang);
 
   // Build token summary
   const tokenLines = (v.tokens || []).map((t) => {
@@ -310,6 +328,13 @@ export function extractJsonFromResponse<T = any>(text: string): T {
   }
 }
 
+export interface LLMRequestOptions {
+  /** Abort signal to cancel the request (e.g. when the user navigates away) */
+  signal?: AbortSignal;
+  /** Request timeout in milliseconds (default 120 s, 0 disables) */
+  timeoutMs?: number;
+}
+
 /**
  * Execute LLM Chat Completion via standard OpenAI-compatible API
  */
@@ -317,11 +342,23 @@ export async function executeLLMTask<T = any>(
   taskType: LLMTaskType,
   context: LLMPromptContext,
   config: LLMConfig,
-  customFetch: typeof fetch = window.fetch.bind(window)
+  customFetch?: typeof fetch,
+  options: LLMRequestOptions = {}
 ): Promise<LLMExecutionResult<T>> {
   const startTime = Date.now();
   const systemPrompt = buildSystemPrompt(taskType, config);
   const userPrompt = buildUserPrompt(taskType, context, config);
+  const doFetch: typeof fetch = customFetch || globalThis.fetch.bind(globalThis);
+
+  const fail = (error: string, rawResponse?: string): LLMExecutionResult<T> => ({
+    success: false,
+    taskType,
+    error,
+    rawResponse,
+    promptUsed: userPrompt,
+    latencyMs: Date.now() - startTime,
+    modelUsed: config.model
+  });
 
   // Normalize endpoint URL (strip trailing slashes)
   let endpoint = (config.endpoint || 'https://api.openai.com/v1').replace(/\/+$/, '');
@@ -352,54 +389,68 @@ export async function executeLLMTask<T = any>(
     body.response_format = { type: 'json_object' };
   }
 
+  const controller = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timeoutMs = options.timeoutMs ?? 120000;
+  const timer = controller && timeoutMs > 0 ? setTimeout(() => controller.abort(), timeoutMs) : null;
+  const onExternalAbort = () => controller?.abort();
+  options.signal?.addEventListener('abort', onExternalAbort);
+
+  const post = (payload: any) => doFetch(endpoint, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(payload),
+    signal: controller?.signal
+  });
+
+  const readError = async (res: Response): Promise<string> => {
+    let text = '';
+    try {
+      if (typeof res.text === 'function') {
+        text = await res.text();
+        const json = JSON.parse(text);
+        return json?.error?.message || JSON.stringify(json);
+      }
+      const json = await res.json();
+      return json?.error?.message || JSON.stringify(json);
+    } catch {
+      return text;
+    }
+  };
+
   try {
-    const res = await customFetch(endpoint, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(body)
-    });
+    let res = await post(body);
+
+    // Some OpenAI-compatible servers (e.g. LM Studio, older vLLM) reject JSON mode;
+    // retry once without response_format and rely on the prompt + JSON extraction.
+    if (!res.ok && res.status === 400 && body.response_format) {
+      const errText = await readError(res);
+      if (/response_format|json_object|json mode/i.test(errText)) {
+        const { response_format: _omit, ...withoutJsonMode } = body;
+        res = await post(withoutJsonMode);
+      } else {
+        return fail(`Chyba LLM API (${res.status} ${res.statusText}): ${errText}`);
+      }
+    }
 
     if (!res.ok) {
-      let errText = '';
-      try {
-        const errJson = await res.json();
-        errText = errJson?.error?.message || JSON.stringify(errJson);
-      } catch {
-        errText = await res.text();
-      }
-      return {
-        success: false,
-        taskType,
-        error: `Chyba LLM API (${res.status} ${res.statusText}): ${errText}`,
-        promptUsed: userPrompt,
-        latencyMs: Date.now() - startTime,
-        modelUsed: config.model
-      };
+      return fail(`Chyba LLM API (${res.status} ${res.statusText}): ${await readError(res)}`);
     }
 
     const data = await res.json();
     const content = data?.choices?.[0]?.message?.content || '';
 
     if (!content) {
-      return {
-        success: false,
-        taskType,
-        error: 'LLM nevrátilo žádný obsah zprávy.',
-        promptUsed: userPrompt,
-        latencyMs: Date.now() - startTime,
-        modelUsed: config.model
-      };
+      return fail('LLM nevrátilo žádný obsah zprávy.');
     }
 
     let parsedData: T;
-    if (taskType === 'custom') {
-      try {
-        parsedData = extractJsonFromResponse<T>(content);
-      } catch {
-        parsedData = content as unknown as T;
-      }
-    } else {
+    try {
       parsedData = extractJsonFromResponse<T>(content);
+    } catch (parseErr: any) {
+      if (taskType !== 'custom') {
+        return fail(parseErr.message, content);
+      }
+      parsedData = content as unknown as T;
     }
 
     return {
@@ -412,14 +463,15 @@ export async function executeLLMTask<T = any>(
       modelUsed: data?.model || config.model
     };
   } catch (err: any) {
-    return {
-      success: false,
-      taskType,
-      error: `Chyba spojení s LLM endpointem: ${err.message}`,
-      promptUsed: userPrompt,
-      latencyMs: Date.now() - startTime,
-      modelUsed: config.model
-    };
+    if (err?.name === 'AbortError') {
+      return fail(options.signal?.aborted
+        ? 'Požadavek na LLM byl zrušen.'
+        : `Vypršel časový limit požadavku na LLM (${Math.round(timeoutMs / 1000)} s).`);
+    }
+    return fail(`Chyba spojení s LLM endpointem: ${err?.message || err}`);
+  } finally {
+    if (timer) clearTimeout(timer);
+    options.signal?.removeEventListener('abort', onExternalAbort);
   }
 }
 
@@ -429,56 +481,85 @@ export async function executeLLMTask<T = any>(
 export function applyTranslationToVerse(
   verse: Verse,
   result: LLMTranslationResult,
-  targetLang: string = 'cs'
+  targetLang: string = 'cs',
+  options: { translationId?: string; model?: string } = {}
 ): Verse {
   const updatedTranslations = [...verse.translations];
-  const existingIdx = updatedTranslations.findIndex((t) => t.lang === targetLang && t.type === 'fluent');
+  const isCs = targetLang === 'cs';
 
-  const newEntry = {
-    id: `${targetLang}_fluent`,
-    label: targetLang === 'cs' ? 'Český plynulý překlad (LLM)' : 'English Fluent Translation (LLM)',
-    lang: targetLang,
-    type: 'fluent' as const,
-    text: result.fluentTranslation,
-    notes: result.commentary
-  };
+  // Update the active (or first fluent) translation in place, keeping its id, label and
+  // author so that word alignments keyed by the translation id stay valid.
+  const fluentIdx = options.translationId
+    ? updatedTranslations.findIndex((t) => t.id === options.translationId)
+    : updatedTranslations.findIndex((t) => t.lang === targetLang && t.type === 'fluent');
 
-  if (existingIdx !== -1) {
-    updatedTranslations[existingIdx] = newEntry;
-  } else {
-    updatedTranslations.push(newEntry);
+  if (result.fluentTranslation) {
+    if (fluentIdx !== -1) {
+      updatedTranslations[fluentIdx] = {
+        ...updatedTranslations[fluentIdx],
+        text: result.fluentTranslation
+      };
+    } else {
+      updatedTranslations.push({
+        id: `${targetLang}_fluent`,
+        label: isCs ? 'Český plynulý překlad (LLM)' : `Fluent Translation (LLM, ${targetLang})`,
+        lang: targetLang,
+        type: 'fluent',
+        text: result.fluentTranslation
+      });
+    }
   }
 
   // Also store literal if available
   if (result.literalTranslation) {
     const litIdx = updatedTranslations.findIndex((t) => t.lang === targetLang && t.type === 'literal');
-    const litEntry = {
-      id: `${targetLang}_literal`,
-      label: targetLang === 'cs' ? 'Doslovný překlad (LLM)' : 'Literal Translation (LLM)',
-      lang: targetLang,
-      type: 'literal' as const,
-      text: result.literalTranslation
-    };
     if (litIdx !== -1) {
-      updatedTranslations[litIdx] = litEntry;
+      updatedTranslations[litIdx] = { ...updatedTranslations[litIdx], text: result.literalTranslation };
     } else {
-      updatedTranslations.push(litEntry);
+      updatedTranslations.push({
+        id: `${targetLang}_literal`,
+        label: isCs ? 'Doslovný překlad (LLM)' : `Literal Translation (LLM, ${targetLang})`,
+        lang: targetLang,
+        type: 'literal',
+        text: result.literalTranslation
+      });
     }
   }
 
-  // Update commentary
-  let commentaryCs = verse.commentary_cs;
+  // LLM commentary becomes a structured commentary entry (legacy fields are materialized
+  // first, otherwise they would be hidden once the structured list is non-empty).
+  let commentaries = verse.commentaries;
   if (result.commentary) {
-    commentaryCs = commentaryCs
-      ? `${commentaryCs}\n\n[LLM Komentář]: ${result.commentary}`
-      : `[LLM Komentář]: ${result.commentary}`;
+    commentaries = [
+      ...getVerseCommentaries(verse),
+      {
+        id: `comm_llm_${Date.now()}`,
+        author: options.model ? `LLM (${options.model})` : 'AI / LLM Asistent',
+        tradition: isCs ? 'Filologická syntéza (LLM)' : 'Philological synthesis (LLM)',
+        title: isCs ? 'Výklad verše' : 'Verse commentary',
+        lang: targetLang,
+        text: result.commentary,
+        isOriginalSanskrit: false
+      }
+    ];
   }
 
   return {
     ...verse,
     translations: updatedTranslations,
-    commentary_cs: commentaryCs
+    commentaries
   };
+}
+
+/**
+ * Resolves the alignment key for a verse: alignments are keyed by translation id
+ * (e.g. "cs_fluent"). A language code is mapped to that language's fluent translation.
+ */
+export function resolveAlignmentKey(verse: Verse, translationIdOrLang: string): string {
+  if (verse.translations.some((t) => t.id === translationIdOrLang)) return translationIdOrLang;
+  const sameLang = verse.translations.filter((t) => t.lang === translationIdOrLang);
+  const preferred = sameLang.find((t) => t.type === 'fluent') || sameLang[0];
+  return preferred ? preferred.id : translationIdOrLang;
 }
 
 /**
@@ -487,12 +568,13 @@ export function applyTranslationToVerse(
 export function applyAlignmentsToVerse(
   verse: Verse,
   alignResult: LLMAlignmentResult,
-  targetLang: string = 'cs'
+  translationIdOrLang: string = 'cs'
 ): Verse {
+  const key = resolveAlignmentKey(verse, translationIdOrLang);
   const alignmentMap = new Map<string, string[]>();
   for (const a of alignResult.alignments || []) {
     if (a.tokenId && Array.isArray(a.matchedWords)) {
-      alignmentMap.set(a.tokenId, a.matchedWords);
+      alignmentMap.set(a.tokenId, a.matchedWords.filter((w) => typeof w === 'string' && w.trim()).map((w) => w.trim()));
     }
   }
 
@@ -500,13 +582,10 @@ export function applyAlignmentsToVerse(
     const matched = alignmentMap.get(tk.id);
     if (!matched) return tk;
 
-    const currentMatches = { ...(tk.alignment?.matched_words || {}) };
-    currentMatches[targetLang] = matched;
-
     return {
       ...tk,
       alignment: {
-        matched_words: currentMatches
+        matched_words: { ...(tk.alignment?.matched_words || {}), [key]: matched }
       }
     };
   });
@@ -515,6 +594,23 @@ export function applyAlignmentsToVerse(
     ...verse,
     tokens: updatedTokens
   };
+}
+
+/**
+ * Keeps only grammar fields whose values are valid according to GrammarSchema,
+ * so that a hallucinated value (e.g. pos "adverb") cannot make the document invalid.
+ */
+function sanitizeGrammar(raw: unknown): Partial<Grammar> {
+  if (!raw || typeof raw !== 'object') return {};
+  const shape = GrammarSchema.shape as Record<string, { safeParse: (v: unknown) => { success: boolean; data?: unknown } }>;
+  const clean: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(raw as Record<string, unknown>)) {
+    const validator = shape[field];
+    if (!validator || value === null || value === undefined || value === '') continue;
+    const parsed = validator.safeParse(value);
+    if (parsed.success && parsed.data !== undefined) clean[field] = parsed.data;
+  }
+  return clean as Partial<Grammar>;
 }
 
 /**
@@ -536,19 +632,21 @@ export function applyGrammarCorrectionsToVerse(
     if (!corr) return tk;
 
     const updatedText = { ...tk.text };
-    if (corr.suggestedIast) {
-      updatedText.iast = corr.suggestedIast;
+    if (typeof corr.suggestedIast === 'string' && corr.suggestedIast.trim() && corr.suggestedIast.trim() !== tk.text.iast) {
+      updatedText.iast = corr.suggestedIast.trim();
+      // Keep the Devanagari form in sync with the corrected IAST
+      updatedText.devanagari = iastToDevanagari(updatedText.iast);
     }
 
     const updatedGrammar: Grammar = {
       ...(tk.grammar || {}),
-      ...(corr.grammar || {})
+      ...sanitizeGrammar(corr.grammar)
     };
 
     return {
       ...tk,
       text: updatedText,
-      lemma: corr.suggestedLemma || tk.lemma,
+      lemma: (typeof corr.suggestedLemma === 'string' && corr.suggestedLemma.trim()) || tk.lemma,
       grammar: updatedGrammar,
       sandhi_note: corr.explanation ? `Oprava: ${corr.explanation}` : tk.sandhi_note
     };

@@ -1,5 +1,5 @@
-import { SanskritDocument, AppSettings } from '../types/schema.ts';
-import { createCzechRules } from '../transliteration/rules.ts';
+import { SanskritDocument, AppSettings, DocumentSchema, AppSettingsSchema } from '../types/schema.ts';
+import { downloadJsonFile, stripSettingsSecrets } from './localStore.ts';
 
 export interface GlossaryTermEntry {
   stem: string;
@@ -67,28 +67,32 @@ export function createWorkspaceBundle(
  * Serializes a Workspace Project Bundle to JSON.
  */
 export function exportWorkspaceBundleToJSON(bundle: SanskritWorkspaceProject): string {
-  return JSON.stringify(bundle, null, 2);
+  // Project files are meant to be shared – never write the LLM API key into them
+  return JSON.stringify({ ...bundle, settings: stripSettingsSecrets(bundle.settings) }, null, 2);
+}
+
+/**
+ * Builds a filesystem-friendly file name from a project title ("Bhagavadgītā" -> "bhagavadgita").
+ */
+export function projectFileSlug(title: string): string {
+  const slug = (title || 'projekt')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036F]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+  return slug || 'projekt';
 }
 
 /**
  * Downloads the full Workspace Project Bundle file (*.sanskrit-project.json).
  */
 export function downloadWorkspaceBundle(bundle: SanskritWorkspaceProject, filename?: string): void {
-  const jsonStr = exportWorkspaceBundleToJSON(bundle);
-  const blob = new Blob([jsonStr], { type: 'application/json' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-
-  const safeTitle = (bundle.projectTitle || 'projekt')
-    .toLowerCase()
-    .replace(/[^a-z0-9_-]/g, '_')
-    .slice(0, 30);
-  a.download = filename || `${safeTitle}_workspace.sanskrit-project.json`;
-  a.href = url;
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  URL.revokeObjectURL(url);
+  downloadJsonFile(
+    filename || `${projectFileSlug(bundle.projectTitle)}_workspace.sanskrit-project.json`,
+    exportWorkspaceBundleToJSON(bundle)
+  );
 }
 
 /**
@@ -102,43 +106,37 @@ export async function importWorkspaceBundleFromFile(file: File): Promise<Sanskri
         const text = e.target?.result as string;
         const parsed = JSON.parse(text);
 
-        // Check if it's a full workspace bundle
+        // Full workspace bundle: validate the document (applies defaults, rejects broken data)
         if (parsed.format === 'sanskrit-web-workspace-bundle' && parsed.document) {
-          resolve(parsed as SanskritWorkspaceProject);
+          const document = DocumentSchema.parse(parsed.document);
+          const settingsResult = AppSettingsSchema.safeParse(parsed.settings ?? {});
+          resolve({
+            ...parsed,
+            document,
+            settings: settingsResult.success ? settingsResult.data : AppSettingsSchema.parse({}),
+            glossary: parsed.glossary && typeof parsed.glossary === 'object' ? parsed.glossary : {},
+            translationState: {
+              activeVerseId: parsed.translationState?.activeVerseId || document.verses[0]?.id || '',
+              verseStatuses: parsed.translationState?.verseStatuses || {},
+              lastSavedAt: parsed.translationState?.lastSavedAt || new Date().toISOString()
+            }
+          } as SanskritWorkspaceProject);
           return;
         }
 
         // Backward compatibility: If it's a plain SanskritDocument JSON, upgrade it to a project bundle!
         if (parsed.document && parsed.verses) {
-          const upgraded = createWorkspaceBundle(
-            parsed as SanskritDocument,
-            {
-              version: '2.0.0',
-              layers: {
-                devanagari: { visible: true, version: 'standard' },
-                transliteration: { visible: true, version: 'iast' },
-                translation: { visible: true, activeLang: 'cs', activeTypes: ['fluent'] },
-                meter: { visible: true, showAksharas: true }
-              },
-              theme: 'parchment',
-              uiLanguage: 'cs',
-              czechRules: createCzechRules(),
-              defaultDictionary: 'cologne_mw',
-              preserveManualEdits: true,
-              fontSizeDevanagari: 24,
-              fontSizeTransliteration: 16,
-              fontFamilyDevanagari: 'Tiro Devanagari Sanskrit, Noto Serif Devanagari, serif',
-              autoSaveToLocalStorage: true
-            },
-            parsed.verses[0]?.id || ''
-          );
-          resolve(upgraded);
+          const document = DocumentSchema.parse(parsed);
+          resolve(createWorkspaceBundle(document, AppSettingsSchema.parse({}), document.verses[0]?.id || ''));
           return;
         }
 
         reject(new Error('Neplatný formát souboru projektu (očekáván .sanskrit-project.json nebo dokumentový JSON).'));
       } catch (err: any) {
-        reject(new Error(`Chyba při čtení JSON souboru: ${err.message}`));
+        const detail = err?.issues
+          ? err.issues.slice(0, 3).map((i: any) => `${i.path.join('.')}: ${i.message}`).join('; ')
+          : err.message;
+        reject(new Error(`Chyba při čtení JSON souboru: ${detail}`));
       }
     };
     reader.onerror = () => reject(new Error('Chyba při načítání souboru.'));
@@ -151,7 +149,7 @@ export async function importWorkspaceBundleFromFile(file: File): Promise<Sanskri
  */
 export function saveWorkspaceBundleToCache(bundle: SanskritWorkspaceProject): void {
   try {
-    localStorage.setItem(STORAGE_PROJECT_KEY, JSON.stringify(bundle));
+    localStorage.setItem(STORAGE_PROJECT_KEY, exportWorkspaceBundleToJSON(bundle));
   } catch (e) {
     console.warn('[Storage] Failed to save workspace bundle to cache:', e);
   }
