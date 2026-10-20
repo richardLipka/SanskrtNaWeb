@@ -50,7 +50,7 @@ class Sanskrt_Shortcode {
 	public static function handle_reader_shortcode( $atts ) {
 		$parsed_atts = is_array( $atts ) ? $atts : array();
 		$ids_raw     = isset( $parsed_atts['ids'] ) ? $parsed_atts['ids'] : '';
-		$ids         = array_filter( array_map( 'trim', explode( ',', $ids_raw ) ) );
+		$ids         = array_filter( array_map( 'sanitize_text_field', array_map( 'trim', explode( ',', $ids_raw ) ) ) );
 
 		if ( empty( $ids ) ) {
 			// If no IDs given, render all canonical verses.

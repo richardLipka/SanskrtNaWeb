@@ -20,6 +20,13 @@ class Sanskrt_Renderer {
 	 *
 	 * @var array<string, mixed>
 	 */
+	/**
+	 * Counter making container ids unique when a verse is embedded more than once per page.
+	 *
+	 * @var int
+	 */
+	protected static $instance_counter = 0;
+
 	protected static $default_attributes = array(
 		'id'                  => 'pys_1_1',
 		'custom_json'         => '',
@@ -96,7 +103,7 @@ class Sanskrt_Renderer {
 		// 1. Check if custom JSON was provided.
 		$custom_json = ! empty( $attrs['custom_json'] ) ? $attrs['custom_json'] : $content;
 		if ( ! empty( $custom_json ) ) {
-			$decoded = json_decode( trim( $custom_json ), true );
+			$decoded = self::decode_custom_json( $custom_json );
 			if ( is_array( $decoded ) && ( isset( $decoded['scripts'] ) || isset( $decoded['id'] ) ) ) {
 				$verse = $decoded;
 			}
@@ -116,6 +123,8 @@ class Sanskrt_Renderer {
 			return '<!-- SanskrtNaWeb: Žádný verš nebyl nalezen. -->';
 		}
 
+		$verse = self::normalize_verse( $verse );
+
 		// Enqueue assets if not already enqueued.
 		wp_enqueue_style( 'sanskrt-base' );
 		wp_enqueue_style( 'sanskrt-skins' );
@@ -132,7 +141,8 @@ class Sanskrt_Renderer {
 	 * @return string
 	 */
 	protected static function render_verse_html( $verse, $attrs ) {
-		$verse_id       = esc_attr( isset( $verse['id'] ) ? $verse['id'] : 'verse_' . wp_rand() );
+		$verse_id       = isset( $verse['id'] ) ? (string) $verse['id'] : 'verse_' . wp_rand();
+		$dom_id         = 'sanskrt-' . sanitize_html_class( $verse_id, 'verse' ) . '-' . ( ++self::$instance_counter );
 		$skin_class     = 'skin-' . esc_attr( $attrs['skin'] );
 		$custom_class   = ! empty( $attrs['class_name'] ) ? ' ' . esc_attr( $attrs['class_name'] ) : '';
 		$highlight_attr = $attrs['show_cross_highlight'] ? 'true' : 'false';
@@ -140,7 +150,7 @@ class Sanskrt_Renderer {
 		ob_start();
 		?>
 		<div class="sanskrt-verse-container <?php echo esc_attr( $skin_class . $custom_class ); ?>"
-			id="sanskrt-<?php echo esc_attr( $verse_id ); ?>"
+			id="<?php echo esc_attr( $dom_id ); ?>"
 			data-verse-id="<?php echo esc_attr( $verse_id ); ?>"
 			data-cross-highlight="<?php echo esc_attr( $highlight_attr ); ?>"
 			role="region"
@@ -395,7 +405,6 @@ class Sanskrt_Renderer {
 	protected static function render_translations_layer( $verse, $attrs ) {
 		$show_fluent  = $attrs['show_translation'];
 		$show_literal = $attrs['show_literal'];
-		$style_hidden = ( ! $show_fluent && ! $show_literal ) ? 'display: none;' : '';
 
 		// Filter translations by requested language.
 		$filtered_translations = array();
@@ -413,7 +422,7 @@ class Sanskrt_Renderer {
 
 		$tokens = isset( $verse['tokens'] ) ? $verse['tokens'] : array();
 		?>
-		<div class="sanskrt-layer sanskrt-layer-translation-group" data-layer-name="translation" style="<?php echo esc_attr( $style_hidden ); ?>">
+		<div class="sanskrt-layer sanskrt-layer-translation-group">
 			<?php
 			foreach ( $filtered_translations as $tr ) :
 				$is_literal = ( isset( $tr['type'] ) && 'literal' === $tr['type'] );
@@ -430,7 +439,7 @@ class Sanskrt_Renderer {
 					</div>
 					<div class="sanskrt-translation-text">
 						<?php
-						self::render_aligned_translation( $tr['text'], $tokens, isset( $tr['lang'] ) ? $tr['lang'] : 'cs' );
+						self::render_aligned_translation( $tr, $tokens );
 						?>
 					</div>
 				</div>
@@ -485,7 +494,7 @@ class Sanskrt_Renderer {
 							<?php endif; ?>
 						</header>
 						<div class="sanskrt-commentary-body <?php echo ( ! empty( $comm['lang'] ) && 'sa' === $comm['lang'] ) ? 'sanskrt-font-devanagari' : ''; ?>">
-							<?php echo wp_kses_post( nl2br( $comm['text'] ) ); ?>
+							<?php echo nl2br( esc_html( isset( $comm['text'] ) ? $comm['text'] : '' ) ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?>
 						</div>
 						<?php if ( ! empty( $comm['source'] ) ) : ?>
 							<footer class="sanskrt-commentary-footer">
@@ -502,23 +511,26 @@ class Sanskrt_Renderer {
 	/**
 	 * Helper: renders tokens in script with interactive data attributes.
 	 *
+	 * Tokens are located left to right in the raw text, each search starting after the
+	 * previous token, so a token can never match inside markup inserted for an earlier one.
+	 *
 	 * @param string $full_text Full verse text.
 	 * @param array  $tokens    Array of tokens.
 	 * @param string $script    'devanagari' or 'iast'.
 	 */
 	protected static function render_tokenized_script( $full_text, $tokens, $script ) {
-		// Split full_text into lines if multiline.
-		$lines = explode( "\n", $full_text );
-		$is_multiline = count( $lines ) > 1;
-
-		// For each token, prepare replacement.
-		$rendered = esc_html( $full_text );
+		$full_text = (string) $full_text;
+		$rendered  = '';
+		$cursor    = 0;
 
 		foreach ( $tokens as $t ) {
-			$token_id   = esc_attr( $t['id'] );
-			$token_text = isset( $t['text'][ $script ] ) ? $t['text'][ $script ] : '';
-			if ( empty( $token_text ) ) {
+			$token_text = isset( $t['text'][ $script ] ) ? (string) $t['text'][ $script ] : '';
+			if ( '' === $token_text || empty( $t['id'] ) ) {
 				continue;
+			}
+			$pos = mb_strpos( $full_text, $token_text, $cursor );
+			if ( false === $pos ) {
+				continue; // Sandhi form differs from the token form – leave the text as is.
 			}
 
 			$grammar_label = isset( $t['grammar']['label_cs'] ) ? $t['grammar']['label_cs'] : '';
@@ -526,9 +538,10 @@ class Sanskrt_Renderer {
 			$meaning_cs    = isset( $t['meaning_cs'] ) ? $t['meaning_cs'] : '';
 			$meaning_en    = isset( $t['meaning_en'] ) ? $t['meaning_en'] : '';
 
-			$span = sprintf(
+			$rendered .= esc_html( mb_substr( $full_text, $cursor, $pos - $cursor ) );
+			$rendered .= sprintf(
 				'<span class="sanskrt-token" data-token-id="%1$s" data-lemma="%2$s" data-grammar="%3$s" data-meaning-cs="%4$s" data-meaning-en="%5$s" tabindex="0" role="button" aria-haspopup="dialog" aria-label="%6$s">%7$s</span>',
-				$token_id,
+				esc_attr( $t['id'] ),
 				esc_attr( $lemma ),
 				esc_attr( $grammar_label ),
 				esc_attr( $meaning_cs ),
@@ -536,13 +549,9 @@ class Sanskrt_Renderer {
 				esc_attr( $lemma . ( $grammar_label ? ': ' . $grammar_label : '' ) ),
 				esc_html( $token_text )
 			);
-
-			// Safe replace exact occurrence.
-			$pos = mb_strpos( $rendered, esc_html( $token_text ) );
-			if ( false !== $pos ) {
-				$rendered = mb_substr( $rendered, 0, $pos ) . $span . mb_substr( $rendered, $pos + mb_strlen( esc_html( $token_text ) ) );
-			}
+			$cursor = $pos + mb_strlen( $token_text );
 		}
+		$rendered .= esc_html( mb_substr( $full_text, $cursor ) );
 
 		// Highlight verse numbers and dandas nicely.
 		$rendered = preg_replace( '/(\|\|?\s*[\d\.]+\s*\|\|?|॥\s*[\d\.०-९]+\s*॥)/u', '<span class="sanskrt-verse-danda">$1</span>', $rendered );
@@ -552,33 +561,223 @@ class Sanskrt_Renderer {
 	}
 
 	/**
-	 * Helper: renders translation text with words wrapped in cross-highlighting spans.
+	 * Helper: renders translation text with aligned words wrapped in cross-highlighting spans.
 	 *
-	 * @param string $translation_text Translation string.
-	 * @param array  $tokens           Tokens with alignments.
-	 * @param string $lang             Language code ('cs' or 'en').
+	 * Alignments come from the app format (`matched_words` keyed by translation id) or the
+	 * plugin format (keyed by language). Matching is done on the raw text with Unicode-aware
+	 * word boundaries (Czech diacritics), and the result is escaped segment by segment.
+	 *
+	 * @param array $translation Translation entry (id, lang, text).
+	 * @param array $tokens      Tokens with alignments.
 	 */
-	protected static function render_aligned_translation( $translation_text, $tokens, $lang ) {
-		$rendered = esc_html( $translation_text );
+	protected static function render_aligned_translation( $translation, $tokens ) {
+		$text  = isset( $translation['text'] ) ? (string) $translation['text'] : '';
+		$tr_id = isset( $translation['id'] ) ? (string) $translation['id'] : '';
+		$lang  = isset( $translation['lang'] ) ? (string) $translation['lang'] : 'cs';
 
+		$phrases = array();
 		foreach ( $tokens as $t ) {
-			if ( empty( $t['alignment'][ $lang ] ) ) {
+			if ( empty( $t['id'] ) ) {
 				continue;
 			}
-			$token_id = esc_attr( $t['id'] );
-			$words    = (array) $t['alignment'][ $lang ];
-
+			$words = array();
+			if ( '' !== $tr_id && ! empty( $t['alignment_by_translation'][ $tr_id ] ) ) {
+				$words = (array) $t['alignment_by_translation'][ $tr_id ];
+			} elseif ( ! empty( $t['alignment'][ $lang ] ) ) {
+				$words = (array) $t['alignment'][ $lang ];
+			}
 			foreach ( $words as $word ) {
-				if ( empty( $word ) ) {
-					continue;
+				$word = trim( (string) $word );
+				if ( '' !== $word ) {
+					$phrases[] = array( $word, (string) $t['id'] );
 				}
-				$pattern = '/\b(' . preg_quote( esc_html( $word ), '/' ) . ')\b/iu';
-				$replacement = '<span class="sanskrt-aligned-word" data-token-id="' . $token_id . '">$1</span>';
-				$rendered = preg_replace( $pattern, $replacement, $rendered, 1 );
 			}
 		}
 
+		// Longer phrases first; each phrase takes its first free occurrence.
+		usort(
+			$phrases,
+			function ( $a, $b ) {
+				return mb_strlen( $b[0] ) - mb_strlen( $a[0] );
+			}
+		);
+
+		$ranges = array();
+		foreach ( $phrases as $phrase ) {
+			list( $word, $token_id ) = $phrase;
+			$lead    = preg_match( '/^[\p{L}\p{N}\p{M}]/u', $word ) ? '(?<![\p{L}\p{N}\p{M}])' : '';
+			$trail   = preg_match( '/[\p{L}\p{N}\p{M}]$/u', $word ) ? '(?![\p{L}\p{N}\p{M}])' : '';
+			$pattern = '/' . $lead . preg_quote( $word, '/' ) . $trail . '/iu';
+			if ( ! preg_match_all( $pattern, $text, $matches, PREG_OFFSET_CAPTURE ) ) {
+				continue;
+			}
+			foreach ( $matches[0] as $m ) {
+				$start = $m[1];
+				$end   = $start + strlen( $m[0] );
+				$free  = true;
+				foreach ( $ranges as $r ) {
+					if ( $start < $r[1] && $end > $r[0] ) {
+						$free = false;
+						break;
+					}
+				}
+				if ( $free ) {
+					$ranges[] = array( $start, $end, $token_id );
+					break;
+				}
+			}
+		}
+
+		usort(
+			$ranges,
+			function ( $a, $b ) {
+				return $a[0] - $b[0];
+			}
+		);
+
+		$rendered = '';
+		$cursor   = 0;
+		foreach ( $ranges as $r ) {
+			$rendered .= esc_html( substr( $text, $cursor, $r[0] - $cursor ) );
+			$rendered .= '<span class="sanskrt-aligned-word" data-token-id="' . esc_attr( $r[2] ) . '">' . esc_html( substr( $text, $r[0], $r[1] - $r[0] ) ) . '</span>';
+			$cursor    = $r[1];
+		}
+		$rendered .= esc_html( substr( $text, $cursor ) );
+
 		echo $rendered; // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+	}
+
+	/**
+	 * Decodes custom verse JSON from a block attribute or shortcode content.
+	 * Shortcode content passes through wpautop/wptexturize, which add <p>/<br> tags,
+	 * HTML entities and typographic quotes – those are undone before decoding.
+	 *
+	 * @param string $raw Raw JSON text.
+	 * @return array|null
+	 */
+	protected static function decode_custom_json( $raw ) {
+		$raw     = trim( (string) $raw );
+		$decoded = json_decode( $raw, true );
+		if ( is_array( $decoded ) ) {
+			return $decoded;
+		}
+		$clean   = html_entity_decode( wp_strip_all_tags( $raw ), ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		$clean   = str_replace( array( '“', '”', '„', '″', '«', '»' ), '"', $clean );
+		$clean   = str_replace( array( '‘', '’', '′' ), "'", $clean );
+		$decoded = json_decode( trim( $clean ), true );
+		return is_array( $decoded ) ? $decoded : null;
+	}
+
+	/**
+	 * Returns plain text of a script entry, which may be a string or an app-format
+	 * object { text, mode, lastAutoText }.
+	 *
+	 * @param mixed $entry Script entry.
+	 * @return string
+	 */
+	protected static function script_text( $entry ) {
+		if ( is_array( $entry ) ) {
+			return isset( $entry['text'] ) ? (string) $entry['text'] : '';
+		}
+		return is_string( $entry ) ? $entry : '';
+	}
+
+	/**
+	 * Normalizes verse data exported from the SanskrtNaWeb app (scripts as objects,
+	 * meanings in `vocabulary`, alignments in `alignment.matched_words` keyed by translation
+	 * id, legacy commentary fields) to the structure used by this renderer.
+	 *
+	 * @param array $verse Verse data.
+	 * @return array
+	 */
+	public static function normalize_verse( $verse ) {
+		if ( ! is_array( $verse ) ) {
+			return $verse;
+		}
+
+		// Scripts.
+		$scripts = isset( $verse['scripts'] ) && is_array( $verse['scripts'] ) ? $verse['scripts'] : array();
+		foreach ( $scripts as $key => $entry ) {
+			$scripts[ $key ] = self::script_text( $entry );
+		}
+		$verse['scripts'] = $scripts;
+
+		// Translations.
+		$translations = array();
+		$lang_by_id   = array();
+		foreach ( isset( $verse['translations'] ) && is_array( $verse['translations'] ) ? $verse['translations'] : array() as $tr ) {
+			if ( ! is_array( $tr ) || ! isset( $tr['text'] ) ) {
+				continue;
+			}
+			$tr['lang'] = isset( $tr['lang'] ) ? (string) $tr['lang'] : 'cs';
+			if ( isset( $tr['id'] ) ) {
+				$lang_by_id[ (string) $tr['id'] ] = $tr['lang'];
+			}
+			$translations[] = $tr;
+		}
+		$verse['translations'] = $translations;
+
+		// Tokens.
+		$tokens = array();
+		foreach ( isset( $verse['tokens'] ) && is_array( $verse['tokens'] ) ? $verse['tokens'] : array() as $t ) {
+			if ( ! is_array( $t ) ) {
+				continue;
+			}
+			$vocab = isset( $t['vocabulary'] ) && is_array( $t['vocabulary'] ) ? $t['vocabulary'] : array();
+			foreach ( array( 'cs', 'en' ) as $lang ) {
+				if ( empty( $t[ 'meaning_' . $lang ] ) ) {
+					if ( ! empty( $vocab['meanings_by_lang'][ $lang ]['contextual'] ) ) {
+						$t[ 'meaning_' . $lang ] = $vocab['meanings_by_lang'][ $lang ]['contextual'];
+					} elseif ( ! empty( $vocab[ 'contextual_meaning_' . $lang ] ) ) {
+						$t[ 'meaning_' . $lang ] = $vocab[ 'contextual_meaning_' . $lang ];
+					}
+				}
+			}
+			if ( isset( $t['alignment']['matched_words'] ) && is_array( $t['alignment']['matched_words'] ) ) {
+				$by_tr   = $t['alignment']['matched_words'];
+				$by_lang = array();
+				foreach ( $by_tr as $tr_id => $words ) {
+					$lang = isset( $lang_by_id[ $tr_id ] ) ? $lang_by_id[ $tr_id ] : strtok( (string) $tr_id, '_' );
+					$by_lang[ $lang ] = array_values( array_unique( array_merge( isset( $by_lang[ $lang ] ) ? $by_lang[ $lang ] : array(), (array) $words ) ) );
+				}
+				$t['alignment_by_translation'] = $by_tr;
+				$t['alignment']                = $by_lang;
+			}
+			$tokens[] = $t;
+		}
+		$verse['tokens'] = $tokens;
+
+		// Commentaries: structured list, falling back to legacy fields.
+		if ( empty( $verse['commentaries'] ) ) {
+			$commentaries = array();
+			if ( ! empty( $verse['commentary_by_lang'] ) && is_array( $verse['commentary_by_lang'] ) ) {
+				foreach ( $verse['commentary_by_lang'] as $lang => $text ) {
+					if ( '' !== trim( (string) $text ) ) {
+						$commentaries[] = array(
+							'id'                 => 'comm_' . $lang,
+							'author'             => 'sa' === $lang ? 'Tradiční komentář' : 'Komentář k verši',
+							'lang'               => $lang,
+							'text'               => trim( (string) $text ),
+							'isOriginalSanskrit' => 'sa' === $lang,
+						);
+					}
+				}
+			} elseif ( ! empty( $verse['commentary_cs'] ) ) {
+				$commentaries[] = array(
+					'id'     => 'comm_cs',
+					'author' => 'Český komentář',
+					'lang'   => 'cs',
+					'text'   => trim( (string) $verse['commentary_cs'] ),
+				);
+			}
+			$verse['commentaries'] = $commentaries;
+		}
+
+		if ( isset( $verse['source'] ) && ! is_array( $verse['source'] ) ) {
+			unset( $verse['source'] );
+		}
+
+		return $verse;
 	}
 
 	/**

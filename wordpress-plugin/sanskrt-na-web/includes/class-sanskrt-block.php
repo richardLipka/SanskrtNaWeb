@@ -18,7 +18,13 @@ class Sanskrt_Block {
 	 * Register Gutenberg block.
 	 */
 	public static function init() {
-		add_action( 'init', array( __CLASS__, 'register_block' ) );
+		// init() itself runs on the 'init' hook. A callback added to a hook while that hook
+		// is executing at the same priority is not called any more, so register directly.
+		if ( did_action( 'init' ) ) {
+			self::register_block();
+		} else {
+			add_action( 'init', array( __CLASS__, 'register_block' ) );
+		}
 	}
 
 	/**

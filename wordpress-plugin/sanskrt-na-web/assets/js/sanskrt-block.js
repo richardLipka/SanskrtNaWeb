@@ -15,6 +15,36 @@
 	const data = window.sanskrtBlockData || { options: [], verses: {}, i18n: {} };
 	const i18n = data.i18n || {};
 
+	/**
+	 * Script entries exported from the SanskrtNaWeb app are objects { text, mode };
+	 * React cannot render objects, so always reduce them to plain text.
+	 */
+	function txt(value) {
+		if (value && typeof value === 'object') return value.text || '';
+		return value || '';
+	}
+
+	/** Structured commentaries, falling back to the legacy commentary fields. */
+	function getCommentaries(verse) {
+		if (Array.isArray(verse.commentaries) && verse.commentaries.length) return verse.commentaries;
+		const list = [];
+		if (verse.commentary_by_lang && typeof verse.commentary_by_lang === 'object') {
+			Object.keys(verse.commentary_by_lang).forEach(function (lang) {
+				if (verse.commentary_by_lang[lang]) list.push({ author: lang === 'sa' ? 'Tradiční komentář' : 'Komentář k verši', lang: lang, text: verse.commentary_by_lang[lang] });
+			});
+		} else if (verse.commentary_cs) {
+			list.push({ author: 'Český komentář', lang: 'cs', text: verse.commentary_cs });
+		}
+		return list;
+	}
+
+	/** Mirrors the server-side commentary filter (id or author substring). */
+	function matchesCommentaryFilter(comm, filter) {
+		if (!filter || filter === 'all') return true;
+		const f = String(filter).toLowerCase();
+		return (comm.id && String(comm.id).toLowerCase() === f) || (comm.author && String(comm.author).toLowerCase().indexOf(f) !== -1);
+	}
+
 	registerBlockType('sanskrt/verse-viewer', {
 		title: i18n.title || 'Sanskrtský verš (SanskrtNaWeb)',
 		description: i18n.description || 'Vložení sanskrtského verše s volitelnými vrstvami.',
@@ -42,19 +72,31 @@
 				showControls,
 				showCrossHighlight,
 				transLang,
+				commentaryFilter,
 				customJson,
 			} = attributes;
 
 			// Find selected canonical verse data for editor preview
 			let currentVerse = (data.verses && data.verses[id]) ? data.verses[id] : null;
+			let jsonError = '';
 
 			if (customJson && customJson.trim()) {
 				try {
-					currentVerse = JSON.parse(customJson.trim());
+					const parsed = JSON.parse(customJson.trim());
+					if (parsed && typeof parsed === 'object' && (parsed.scripts || parsed.id)) {
+						currentVerse = parsed;
+					} else {
+						jsonError = 'JSON neobsahuje verš (chybí "scripts" nebo "id").';
+					}
 				} catch (e) {
-					// Keep canonical preview on JSON parse error
+					// Keep canonical preview on JSON parse error, but tell the editor why
+					jsonError = 'Neplatný JSON: ' + e.message;
 				}
 			}
+
+			const commentaryAuthors = currentVerse
+				? getCommentaries(currentVerse).map(function (c) { return c.author; }).filter(function (a, i, arr) { return a && arr.indexOf(a) === i; })
+				: [];
 
 			// Sidebar Settings
 			const inspector = el(
@@ -190,6 +232,7 @@
 						label: i18n.customJsonLabel || 'Vlastní JSON data verše:',
 						help: 'Zde můžete vložit kompletní JSON exportovaný ze SanskrtNaWeb editoru.',
 						value: customJson,
+						help: jsonError || undefined,
 						onChange: function (val) {
 							setAttributes({ customJson: val });
 						},
@@ -198,8 +241,27 @@
 				)
 			);
 
+			// Commentary filter (attribute existed without any UI control)
+			const commentaryControl = commentaryAuthors.length > 1
+				? el(SelectControl, {
+					key: 'comm-filter',
+					label: 'Zobrazené komentáře:',
+					value: commentaryFilter || 'all',
+					options: [{ value: 'all', label: 'Všechny komentáře' }].concat(commentaryAuthors.map(function (a) { return { value: a, label: a }; })),
+					onChange: function (val) {
+						setAttributes({ commentaryFilter: val });
+					},
+				})
+				: null;
+
 			// Editor Canvas Preview
 			const previewElements = [];
+			if (commentaryControl) {
+				previewElements.push(el(InspectorControls, { key: 'inspector-comm' }, el(PanelBody, { title: 'Komentáře', initialOpen: false }, commentaryControl)));
+			}
+			if (jsonError) {
+				previewElements.push(el(Notice, { status: 'warning', isDismissible: false, key: 'json-error' }, jsonError));
+			}
 
 			previewElements.push(
 				el(
@@ -236,7 +298,7 @@
 						el(
 							'div',
 							{ className: 'sanskrt-layer sanskrt-layer-devanagari', key: 'deva' },
-							el('div', { className: 'sanskrt-script-text sanskrt-font-devanagari' }, currentVerse.scripts.devanagari)
+							el('div', { className: 'sanskrt-script-text sanskrt-font-devanagari' }, txt(currentVerse.scripts.devanagari))
 						)
 					);
 				}
@@ -248,7 +310,7 @@
 							'div',
 							{ className: 'sanskrt-layer sanskrt-layer-padaccheda', key: 'pada' },
 							el('div', { className: 'sanskrt-layer-label' }, 'Padaccheda:'),
-							el('div', { className: 'sanskrt-pada-line sanskrt-font-devanagari' }, currentVerse.scripts.devanagari_padaccheda)
+							el('div', { className: 'sanskrt-pada-line sanskrt-font-devanagari' }, txt(currentVerse.scripts.devanagari_padaccheda))
 						)
 					);
 				}
@@ -259,7 +321,7 @@
 						el(
 							'div',
 							{ className: 'sanskrt-layer sanskrt-layer-iast', key: 'iast' },
-							el('div', { className: 'sanskrt-script-text sanskrt-font-iast' }, currentVerse.scripts.iast)
+							el('div', { className: 'sanskrt-script-text sanskrt-font-iast' }, txt(currentVerse.scripts.iast))
 						)
 					);
 				}
@@ -270,14 +332,18 @@
 						el(
 							'div',
 							{ className: 'sanskrt-layer sanskrt-layer-cs-phonetic', key: 'phonetic' },
-							el('div', { className: 'sanskrt-script-text sanskrt-font-phonetic' }, currentVerse.scripts.cs_phonetic)
+							el('div', { className: 'sanskrt-script-text sanskrt-font-phonetic' }, txt(currentVerse.scripts.cs_phonetic))
 						)
 					);
 				}
 
 				// Translations
 				if ((showTranslation || showLiteral) && currentVerse.translations && currentVerse.translations.length) {
-					const transElements = currentVerse.translations
+					const langFiltered = currentVerse.translations.filter(function (tr) {
+						return !transLang || transLang === 'all' || !tr.lang || tr.lang === transLang;
+					});
+					// Same fallback as the server renderer: no match → show all translations
+					const transElements = (langFiltered.length ? langFiltered : currentVerse.translations)
 						.filter(function (tr) {
 							if (tr.type === 'literal') return showLiteral;
 							return showTranslation;
@@ -299,13 +365,16 @@
 				}
 
 				// Commentaries
-				if (showCommentaries && currentVerse.commentaries && currentVerse.commentaries.length) {
+				const previewCommentaries = getCommentaries(currentVerse).filter(function (c) {
+					return matchesCommentaryFilter(c, commentaryFilter);
+				});
+				if (showCommentaries && previewCommentaries.length) {
 					cardChildren.push(
 						el(
 							'div',
 							{ className: 'sanskrt-layer-commentaries', key: 'comm-group' },
-							el('div', { className: 'sanskrt-layer-heading' }, 'Tradiční komentáře (Bhāṣya) — ' + currentVerse.commentaries.length + ' dostupné'),
-							currentVerse.commentaries.map(function (comm, idx) {
+							el('div', { className: 'sanskrt-layer-heading' }, 'Tradiční komentáře (Bhāṣya) — ' + previewCommentaries.length + ' dostupné'),
+							previewCommentaries.map(function (comm, idx) {
 								return el(
 									'div',
 									{ className: 'sanskrt-commentary-card', key: 'comm-' + idx },
