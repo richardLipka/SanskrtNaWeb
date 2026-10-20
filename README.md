@@ -1,6 +1,6 @@
 # Sanskrt Na Web (Sanskrit Web Platform)
 
-[![Build & Test](https://img.shields.io/badge/tests-131%20passed-brightgreen.svg)](https://github.com/richardLipka/SanskrtNaWeb)
+[![Build & Test](https://img.shields.io/badge/tests-168%20passed-brightgreen.svg)](https://github.com/richardLipka/SanskrtNaWeb)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-6.2-purple.svg)](https://vitejs.dev/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Ambuda%20Vidyut-orange.svg)](https://github.com/ambuda-org/vidyut)
@@ -63,7 +63,8 @@ import {
   loadVidyutWasm,
   
   // Transliterace
-  transliterateText,
+  transliterate,
+  transliterateLipi,
   devanagariToIast,
   iastToCzechPhonetic,
   createCzechRules,
@@ -76,7 +77,7 @@ import {
   
   // LLM asistent
   buildUserPrompt,
-  callLLM,
+  executeLLMTask,
   
   // Webové komponenty
   registerSanskritVerse,
@@ -94,6 +95,9 @@ npm run build:lib
 Vygeneruje:
 - `dist/lib/sanskrt-core.es.js` (ES Module pro moderní bundlery)
 - `dist/lib/sanskrt-core.umd.js` (UMD bundle pro přímé vložení do prohlížeče)
+- `dist/lib/types/` (TypeScript deklarace, odkazované z `types` v `package.json`)
+
+Balík `@siva-sh/vidyut` (WebAssembly) zůstává externí závislostí a není do knihovny vkládán.
 
 ---
 
@@ -108,7 +112,7 @@ Plně responzivní čtečka dostupná buď jako webová aplikace na `tab-interac
 ### Klíčové vlastnosti:
 1. **5-vrstvé zobrazení**:
    - **1. Dévanágarí**: Tradiční písmo s ligaturami i verze s rozpadem spřežek (*padaccheda*).
-   - **2. Transliterace**: Akademická IAST, český fonetický přepis (podle prof. Dušana Zbavitele) nebo Harvard-Kyoto.
+   - **2. Transliterace**: Akademická IAST (i s padacchedou), český fonetický přepis (podle prof. Dušana Zbavitele, s nastavitelnými pravidly), Harvard-Kyoto nebo SLP1.
    - **3. Překlad**: Plynulý umělecký překlad i doslovný studijní meziřádkový překlad.
    - **4. Metrum & rytmus (*Chandas*)**: Automatické určení metra (např. *Anuṣṭubh / Śloka*, *Triṣṭubh*, *Indravajrā*) a vizualizace váhy slabik (*laghu* $\cup$ a *guru* —) přímo pod veršem.
    - **5. Komentáře & Tradiční výklady (*Bhāṣya & Ṭīkā*)**: Současné zobrazení více komentářů vedle sebe (např. *Śaṅkarācārya*, *Rāmānujācārya*, *Madhva* a poznámky českých překladatelů).
@@ -125,7 +129,7 @@ Profesionální prostředí pro překladatele a indology inspirované moderními
 1. **Dvojitý náhled (Split-View)**: Živý náhled formátovaného verše v pravém sloupci se okamžitě aktualizuje při psaní.
 2. **Virtuální klávesnice s diakritikou**:
    - **IAST lišta**: Rychlé vkládání znaků s makrony a tečkami na pozici kurzoru (`ā`, `ī`, `ū`, `ṛ`, `ṝ`, `ḷ`, `ṭ`, `ḍ`, `ṇ`, `ś`, `ṣ`, `ṅ`, `ñ`, `ṃ`, `ḥ`).
-   - **Živý přepis (IME)**: Možnost psát běžnou latinkou s automatickou konverzí do dévanágarí v reálném čase.
+   - **Živý přepis (IME)**: Psaní v IAST s průběžnou konverzí celého rozepsaného slova do dévanágarí (`yoga` → योग, Backspace maže poslední latinské písmeno, `|` → ।, `||` → ॥).
    - **Pāṇiniovská vizuální klávesnice**: Uspořádaná podle tradičních artikulačních tříd (*kaṇṭhya*, *tālavya*, *mūrdhanya*, *dantya*, *oṣṭhya*).
 3. **Nástroj pro párování slov (Word Alignment)**:
    - Kliknutím na sanskrtský token a následně na odpovídající české/anglické slovo v překladu vytvoříte vazbu pro cross-highlighting.
@@ -176,7 +180,7 @@ npm install
 # Spuštění vývojového serveru (HMR na http://localhost:5173/)
 npm run dev
 
-# Spuštění kompletní testovací sady (14 sad, 131 testů)
+# Spuštění kompletní testovací sady (15 sad, 168 testů)
 npm test
 
 # Spuštění testů ve sledovacím režimu
