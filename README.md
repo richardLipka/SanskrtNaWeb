@@ -135,7 +135,7 @@ Profesionální prostředí pro překladatele a indology inspirované moderními
    - Tři řádky – dévanágarí, IAST a slova překladu; nad slovem v dévanágarí se zobrazí transliterace, lemma, gramatika a význam.
    - Kliknutím na sanskrtské slovo a poté na slovo překladu vznikne vazba, opětovným kliknutím se zruší; Shift + klik přiřadí celý úsek. Vazby jsou barevně odlišené a jejich seznam umožňuje jednotlivé vazby odebrat.
    - Tlačítko pro automatický návrh vazeb na základě slovníkové shody.
-   - **Složeniny a sandhi**: návrh rozdělení slova na všechny členy (kṛṣṇārjunasaṃvādaḥ → kṛṣṇa + arjuna + saṃvāda), ruční rozdělení („dharma + kṣetre“) i zpětné spojení; každý člen má vlastní slovníková hesla a vazby. Slova se spojovníkem (dharma-kṣetre) se při dělení verše na slova rozdělí automaticky. Vše běží v prohlížeči bez serveru a bez online služeb: WebAssembly balík Vidyut obsahuje jen rozdělovač sandhi (segmentátor *vidyut-cheda* ani lexikon *vidyut-kosha* v něm nejsou), proto má aplikace vlastní segmentátor ([`compoundService.ts`](src/core/lemmatizer/compoundService.ts), [`compoundSegmenter.ts`](src/core/lemmatizer/compoundSegmenter.ts)). Nejdřív nabídne rozdělení doložená v *Digital Corpus of Sanskrit*, jinak Vidyut navrhne místa řezu s obráceným sandhi a členy se ověří a seřadí podle statického lexikonu dodávaného s aplikací ([`public/lexicon/`](public/lexicon/), 3,2 MB: hesla Monier-Williams, četnosti a pravidla koncovek z DCS). Stažený offline slovník Vidyut (`data-0.4.0.zip`, [`kosha/`](src/core/lemmatizer/kosha/)) je volitelný a zpřesní tvary. Na 9 857 složeninách z DCS je první návrh správný v ~78 % (validační vzorek) (viz *Lexikon pro dělení složenin* níže).
+   - **Složeniny a sandhi**: návrh rozdělení slova na všechny členy (kṛṣṇārjunasaṃvādaḥ → kṛṣṇa + arjuna + saṃvāda), ruční rozdělení („dharma + kṣetre“) i zpětné spojení; každý člen má vlastní slovníková hesla a vazby. Slova se spojovníkem (dharma-kṣetre) se při dělení verše na slova rozdělí automaticky. Vše běží v prohlížeči bez serveru a bez online služeb: WebAssembly balík Vidyut obsahuje jen rozdělovač sandhi (segmentátor *vidyut-cheda* ani lexikon *vidyut-kosha* v něm nejsou), proto má aplikace vlastní segmentátor ([`compoundService.ts`](src/core/lemmatizer/compoundService.ts), [`compoundSegmenter.ts`](src/core/lemmatizer/compoundSegmenter.ts)). Nejdřív nabídne rozdělení doložená v *Digital Corpus of Sanskrit*, jinak Vidyut navrhne místa řezu s obráceným sandhi a členy se ověří a seřadí podle statického lexikonu dodávaného s aplikací ([`public/lexicon/`](public/lexicon/), 3,9 MB: hesla Monier-Williams, četnosti, časté slovní tvary a pravidla koncovek z DCS). Rozdělí i slova spojená sandhi (pāṇḍavāścaiva → pāṇḍavāḥ + ca + eva, loko'sti → lokaḥ + asti) a pozná jednoduchá slova (devānām → deva). Stažený offline slovník Vidyut (`data-0.4.0.zip`, [`kosha/`](src/core/lemmatizer/kosha/)) je volitelný. Na složeninách z DCS je první návrh správný v ~77 %, na Bhagavadgītě v ~91 % slov (viz *Lexikon pro dělení složenin* níže).
 4. **Správa a editace víceautorských komentářů**:
    - Rychlé předvolby komentátorů (*Śaṅkara*, *Rāmānuja*, *Śrīdhara*, *Madhva*, *Filipský & Vacek*).
    - In-place editace textu výkladu, tradice i citace pramene.
@@ -242,8 +242,12 @@ Repozitář DCS má názvy souborů, které Windows nedokáže vytvořit, proto 
 | Nastavení | Správně 1. návrh | Správně mezi 3 |
 | :--- | :--- | :--- |
 | jen Vidyut kosha (předchozí verze) | 58,3 % | 74,6 % |
-| statický lexikon (výchozí, bez stahování) | 78,2 % | 85,5 % |
-| statický lexikon + Vidyut kosha | 79,2 % | 87,9 % |
+| statický lexikon (výchozí, bez stahování) | 76,8 % | 89,1 % |
+| statický lexikon + Vidyut kosha | 75,9 % | 89,3 % |
+
+Slovo, které segmentátor doporučí ponechat celé, se zde počítá jako chyba (všechna slova sady jsou složeniny).
+
+**Ověření na Bhagavadgītě** (text sanskritdocuments.org; verze ITRANS a dévanágarí se po transliteraci shodují ve 700 ze 701 veršů; Gītā v DCS není, takže doložená rozdělení výsledek nezkreslují): 6 455 slov včetně skupin spojených sandhi, rozbor pro 99,9 % slov, 98,5 % navržených lemmat je heslem Monier-Williams (vzorek 80 lemmat ověřený online v Kolínském API se s offline kontrolou shodoval úplně). Ruční posouzení (rozdělení a lemmata vhodná pro dohledání a překlad, posuzované jazykovým modelem v kontextu verše) na náhodném vzorku 101 slov odděleném od vzorku použitého při ladění: 91 % správně, 6 % částečně (správné dělení, jedno lemma chybně), 3 % chybně.
 
 ## 📄 Licence
 
