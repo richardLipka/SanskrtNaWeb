@@ -57,7 +57,7 @@ let shippedLexicon: StaticLexicon | null = null;
 function loadShippedLexicon(): StaticLexicon {
   if (!shippedLexicon) {
     const gz = (f: string) => gunzipSync(readFileSync(join(LEXICON_DIR, f))).toString('utf8');
-    shippedLexicon = new StaticLexicon(gz('stems.tsv.gz'), gz('compounds.tsv.gz'), gz('endings.tsv.gz'));
+    shippedLexicon = new StaticLexicon(gz('stems.tsv.gz'), gz('compounds.tsv.gz'), gz('endings.tsv.gz'), gz('forms.tsv.gz'));
   }
   return shippedLexicon;
 }
@@ -195,6 +195,28 @@ describe.skipIf(!hasLexicon)('Compound splitting with the shipped lexicon', () =
     expect(first.members[0].alternatives).toEqual(['rājan']);
     const [tatra, eva] = analyzeCompoundSync('tatraiva')!.splits[0].members;
     expect([tatra.lemma, tatra.label, eva.lemma, eva.label]).toEqual(['tatra', 'ind.', 'eva', 'ind.']);
+  });
+
+  it('keeps simple words whole and resolves frequent forms (Bhagavadgītā cases)', () => {
+    useStaticLexicon(loadShippedLexicon());
+    const whole = (w: string) => {
+      const r = analyzeCompoundSync(w)!;
+      expect(r.recommended).toBe('whole');
+      return r.whole[0].lemma;
+    };
+    expect(whole('devānāṃ')).toBe('deva');
+    expect(whole('dhārtarāṣṭrān')).toBe('dhārtarāṣṭra');
+    expect(whole('ucyate')).toBe('vac');
+    expect(whole('me')).toBe('mad');
+    expect(whole('yaḥ')).toBe('yad');
+    expect(whole('jagat')).toBe('jagat');
+  });
+
+  it('splits sandhi groups of separate words, also across an avagraha', () => {
+    useStaticLexicon(loadShippedLexicon());
+    expect(lemmas("loko'sti", { noAttested: true })).toEqual(['loka', 'as']);
+    expect(lemmas("buddhayo'vyavasāyinām", { noAttested: true })).toEqual(['buddhi', 'avyavasāyin']);
+    expect(lemmas('vibhūtervistaro', { noAttested: true })).toEqual(['vibhūti', 'vistara']);
   });
 });
 
