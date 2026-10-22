@@ -30,7 +30,8 @@ const flag = (name: string) => args.includes(`--${name}`);
 await loadVidyutWasm();
 const lexDir = opt('lexicon', 'public/lexicon')!;
 const gz = (f: string) => gunzipSync(readFileSync(join(lexDir, f))).toString('utf8');
-const lexicon = new StaticLexicon(gz('stems.tsv.gz'), flag('attested') ? gz('compounds.tsv.gz') : '', gz('endings.tsv.gz'));
+const optionalGz = (f: string) => { try { return gz(f); } catch { return ''; } };
+const lexicon = new StaticLexicon(gz('stems.tsv.gz'), flag('attested') ? gz('compounds.tsv.gz') : '', optionalGz('endings.tsv.gz'), optionalGz('forms.tsv.gz'));
 const koshaPath = opt('kosha');
 const kosha = koshaPath ? await koshaFromZip(new Uint8Array(readFileSync(koshaPath))) : null;
 
@@ -48,10 +49,14 @@ const sample = limit ? rows.filter((_, i) => i % Math.ceil(rows.length / limit) 
 const showErrors = Number(opt('errors', '0'));
 const errors: string[] = [];
 
-interface Result { top1: number; top3: number; count: number; none: number; ms: number }
+/**
+ * `whole` = the analysis recommends reading the word as one word; the gold words are
+ * compounds, so that counts as a miss for top 1 (the splits still count for top 3)
+ */
+interface Result { top1: number; top3: number; count: number; none: number; whole: number; ms: number }
 
 function evaluate(options: AnalyzeOptions, set?: string): Result {
-  const r: Result = { top1: 0, top3: 0, count: 0, none: 0, ms: 0 };
+  const r: Result = { top1: 0, top3: 0, count: 0, none: 0, whole: 0, ms: 0 };
   const t0 = performance.now();
   for (const g of sample) {
     if (set && g.set !== set) continue;
@@ -68,7 +73,9 @@ function evaluate(options: AnalyzeOptions, set?: string): Result {
         return lemmas.includes(gold.lemma) || pausaKey(toSlp1(m.iast)) === pausaKey(gold.form);
       });
     };
-    if (ok(0)) r.top1++;
+    const whole = res?.recommended === 'whole';
+    if (whole) r.whole++;
+    if (ok(0) && !whole) r.top1++;
     else if (errors.length < showErrors) errors.push(`${g.surface}: gold ${g.members.map((m) => toIast(m.lemma)).join(' + ')}  |  got ${splits[0].members.map((m) => m.lemma).join(' + ')}`);
     if (ok(0) || ok(1) || ok(2)) r.top3++;
   }
@@ -78,7 +85,7 @@ function evaluate(options: AnalyzeOptions, set?: string): Result {
 
 const pct = (n: number, d: number) => `${((100 * n) / Math.max(1, d)).toFixed(1)} %`;
 const report = (name: string, r: Result) =>
-  console.log(`${name.padEnd(46)} n=${r.count}  top1 ${pct(r.top1, r.count)}  top3 ${pct(r.top3, r.count)}  no split ${pct(r.none, r.count)}  ${r.ms.toFixed(1)} ms/word`);
+  console.log(`${name.padEnd(46)} n=${r.count}  top1 ${pct(r.top1, r.count)}  top3 ${pct(r.top3, r.count)}  no split ${pct(r.none, r.count)}  kept whole ${pct(r.whole, r.count)}  ${r.ms.toFixed(1)} ms/word`);
 
 const configs: Array<[string, AnalyzeOptions, StaticLexicon | null, boolean]> = [];
 if (!flag('grid') || flag('baseline')) {
@@ -88,8 +95,8 @@ if (!flag('grid') || flag('baseline')) {
 if (flag('grid')) {
   const list = (name: string, def: string) => opt(name, def)!.split(',').map(Number);
   for (const exp of list('exps', '1.5,2')) for (const fw of list('freqs', '0,2,4')) for (const cost of list('costs', '4'))
-    for (const mb of list('mws', '0,10')) for (const dc of list('divs', '0')) {
-      configs.push([`exp=${exp} freq=${fw} cost=${cost} mw=${mb} div=${dc}`, { scoring: { lengthExponent: exp, freqWeight: fw, memberCost: cost, divisibleCost: dc }, mwBonus: mb }, lexicon, !!kosha]);
+    for (const mb of list('mws', '0,10')) for (const dc of list('divs', '0')) for (const wc of list('words', 'Infinity')) {
+      configs.push([`exp=${exp} freq=${fw} cost=${cost} mw=${mb} div=${dc} word=${wc}`, { scoring: { lengthExponent: exp, freqWeight: fw, memberCost: cost, divisibleCost: dc, wordCost: wc }, mwBonus: mb }, lexicon, !!kosha]);
     }
 } else {
   configs.push(['static lexicon, tuned', {}, lexicon, false]);
