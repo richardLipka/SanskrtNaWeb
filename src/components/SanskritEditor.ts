@@ -181,6 +181,8 @@ export class SanskritEditorElement extends HTMLElement {
     source?: 'offline' | 'mw';
     /** Readings of the whole word when the dictionary knows it as one word */
     whole?: Array<{ lemma: string; label: string }>;
+    /** The word reads better as one word than as any split */
+    wholeRecommended?: boolean;
     error?: string;
   } | null = null;
   private _mwState: { key: string; loading: boolean; result: MwLookupResult | null } | null = null;
@@ -1314,7 +1316,9 @@ export class SanskritEditorElement extends HTMLElement {
             <button class="btn btn-sm btn-outline" id="btn-propose-split" ${split?.loading ? 'disabled' : ''}>${split?.loading ? '⏳' : (cs ? 'Navrhnout rozdělení' : 'Suggest split')}</button>
           </span>
         </div>
-        ${split && !split.loading && split.whole?.length ? `<p class="cat-hint-text">📖 ${cs ? 'Slovník zná i celé slovo' : 'The dictionary also knows the whole word'}: ${split.whole.map((w) => `<strong>${escapeHtml(w.lemma)}</strong> <small>${escapeHtml(w.label)}</small>`).join(', ')}</p>` : ''}
+        ${split && !split.loading && split.whole?.length ? `<p class="cat-hint-text">📖 ${split.wholeRecommended
+          ? (cs ? 'Nejspíš nejde o složeninu – heslo celého slova' : 'Most likely not a compound – entry of the whole word')
+          : (cs ? 'Slovník zná i celé slovo' : 'The dictionary also knows the whole word')}: ${split.whole.map((w) => `<strong>${escapeHtml(w.lemma)}</strong> <small>${escapeHtml(w.label)}</small>`).join(', ')}</p>` : ''}
         ${split && !split.loading ? (split.items.length ? `
           <ul class="split-candidates">
             ${split.items.map((c, i) => `
@@ -1602,7 +1606,7 @@ export class SanskritEditorElement extends HTMLElement {
               ...(s.mw ? [{ text: 'MW', title: cs ? 'Hranice členů podle hesla Monier-Williams' : 'Member boundaries as in the Monier-Williams entry' }] : [])
             ]
           }));
-          this._splitState = { tokenId, loading: false, items, source: 'offline', whole: analysis.whole };
+          this._splitState = { tokenId, loading: false, items, source: 'offline', whole: analysis.whole, wholeRecommended: analysis.recommended === 'whole' };
         } else {
           // Without the downloaded dictionary: two-way splits checked online in Monier-Williams
           const ranked = await rankSplits(tk.text.iast, { max: 6 });
