@@ -17,6 +17,7 @@ import { LanguageAdapter } from '../core/adapters/languageAdapter.ts';
 import { defaultSanskritAdapter } from '../core/adapters/sanskritAdapter.ts';
 import { SanskritVerseElement, VerseLayerVisibility } from './SanskritVerse.ts';
 import { escapeHtml, safeUrl } from '../core/utils/html.ts';
+import { renderMorphologyHtml } from './morphologyView.ts';
 
 interface ReaderSection {
   key: string;
@@ -562,30 +563,13 @@ export class SanskritReaderElement extends HTMLElement {
       </div>
     `;
 
-    // Derivation tree
-    if (analysis.derivationTree && analysis.derivationTree.steps.length > 0) {
+    // Morphological structure – only when Vidyut's derivation reproduces this word
+    const morphologyHtml = renderMorphologyHtml(analysis.derivationTree, 'cs', { emptyMessage: false });
+    if (morphologyHtml) {
       modalHtml += `
-        <div class="modal-derivation-section" style="border: 1px solid var(--accent-gold); border-radius: 6px; padding: 0.85rem; background: var(--bg-card);">
-          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap;">
-            <strong style="color: var(--accent-gold); font-size: 0.88rem;">📜 Pāṇiniovský derivační strom (vidyut-prakriya): ${escapeHtml(analysis.derivationTree.targetTranslit)}</strong>
-            <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(analysis.derivationTree.category)}</span>
-          </div>
-          <div style="display: flex; flex-direction: column; gap: 0.4rem; font-family: monospace; font-size: 0.82rem;">
-            ${analysis.derivationTree.steps.map((s) => {
-              const ruleUrl = safeUrl(s.ruleUrl);
-              return `
-              <div style="display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; padding: 3px 6px; background: var(--bg-secondary); border-radius: 4px;">
-                <span>
-                  <strong>${s.stepNumber}.</strong>
-                  ${ruleUrl ? `<a href="${escapeHtml(ruleUrl)}" target="_blank" rel="noopener noreferrer" style="color: var(--accent-gold); font-weight: 700; text-decoration: underline;">sūtra ${escapeHtml(s.ruleCode)}</a>` : `sūtra ${escapeHtml(s.ruleCode)}`}
-                  <span style="color: var(--text-muted);">(${escapeHtml(s.ruleSource)})</span>
-                </span>
-                <span style="color: var(--text-primary); font-weight: 600;">
-                  ${escapeHtml(s.termsDeva || s.termsText)} ${s.termsIast ? `<small style="color: var(--text-muted); font-weight: 400;">(${escapeHtml(s.termsIast)})</small>` : ''}
-                </span>
-              </div>`;
-            }).join('')}
-          </div>
+        <div class="modal-derivation-section" style="border: 1px solid var(--bg-card-border); border-radius: 6px; padding: 0.75rem 0.85rem; background: var(--bg-card);">
+          <strong style="color: var(--accent-gold); font-size: 0.88rem;">🌳 Morfologická stavba (Pāṇini, vidyut-prakriya)</strong>
+          ${morphologyHtml}
         </div>
       `;
     }

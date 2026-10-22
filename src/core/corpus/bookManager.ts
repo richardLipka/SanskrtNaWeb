@@ -4,6 +4,7 @@ import { escapeHtml } from '../utils/html.ts';
 import { defaultSanskritAdapter } from '../adapters/sanskritAdapter.ts';
 import { transliterateLipi } from '../lemmatizer/vidyutAdapter.ts';
 import { analyzeSanskritWord } from '../lemmatizer/sanskritLemmatizer.ts';
+import { splitHyphenatedTokens } from '../editor/tokenOps.ts';
 
 export interface ChapterNode {
   chapter: string;
@@ -243,7 +244,7 @@ export function createTokensFromIast(iastText: string, idPrefix = 't'): Token[] 
     .split(/\s+/)
     .filter((w) => w.length > 0);
 
-  return words.map((w, wIdx) => {
+  const tokens: Token[] = words.map((w, wIdx) => {
     const wordDeva = transliterateLipi(w, 'iast', 'devanagari');
     const firstMorph = analyzeSanskritWord(w)[0];
 
@@ -282,6 +283,9 @@ export function createTokensFromIast(iastText: string, idPrefix = 't'): Token[] 
       }
     };
   });
+  // Hyphens mark compound members (dharma-kṣetre): split them right away so that each
+  // member can be looked up in the dictionary
+  return splitHyphenatedTokens(tokens);
 }
 
 export interface CorpusFilter {

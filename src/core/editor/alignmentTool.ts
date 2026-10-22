@@ -19,6 +19,35 @@ export function tokenizeTranslation(translationText: string): string[] {
     .filter((w) => w.length > 0);
 }
 
+export interface TranslationWord {
+  /** Word without surrounding punctuation */
+  word: string;
+  /** Offsets of `word` in the translation text */
+  start: number;
+  end: number;
+  index: number;
+}
+
+/**
+ * Like `tokenizeTranslation`, but keeps each word's position in the text so that
+ * aligned phrases can be mapped back onto individual words.
+ */
+export function splitTranslationWords(translationText: string): TranslationWord[] {
+  const out: TranslationWord[] = [];
+  if (!translationText) return out;
+  const re = /\S+/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(translationText)) !== null) {
+    const raw = m[0];
+    const lead = raw.length - raw.replace(/^[.,;:!?()[\]"'\-–—„“”‚‘’»«›‹…]+/, '').length;
+    const word = raw.replace(EDGE_PUNCTUATION, '');
+    if (!word) continue;
+    const start = m.index + lead;
+    out.push({ word, start, end: start + word.length, index: out.length });
+  }
+  return out;
+}
+
 /**
  * Binds a translation word or phrase to a Sanskrit token.
  */

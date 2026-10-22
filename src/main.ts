@@ -30,6 +30,7 @@ import {
   downloadJsonFile
 } from './core/storage/localStore.ts';
 import { getDictionaryUrl } from './core/dictionaries/dictionaryBuilder.ts';
+import { renderMorphologyHtml } from './components/morphologyView.ts';
 import {
   checkKoshaCacheStatus,
   downloadVidyutKoshaZip,
@@ -40,6 +41,8 @@ import {
   exportKoshaZipToDisk,
   VIDYUT_DATA_ARCHIVE_INFO
 } from './core/lemmatizer/vidyutKoshaDownloader.ts';
+import { loadOfflineKosha, resetOfflineKosha } from './core/lemmatizer/kosha/koshaService.ts';
+import { loadStaticLexicon } from './core/lemmatizer/staticLexicon.ts';
 
 // State
 let activeDoc: SanskritDocument = loadDocumentFromCache() || SAMPLE_DOCUMENT;
@@ -465,32 +468,25 @@ async function runLemmatizer(): Promise<void> {
       `;
     }
 
-    // Paninian Prakriya derivation tree from Vidyut WASM
+    // Morphological structure from a verified Pāṇinian derivation (vidyut-prakriya)
     let prakriyaHtml = '';
-    if (fullResult.prakriyaTree && fullResult.prakriyaTree.steps.length > 0) {
-      const tree = fullResult.prakriyaTree;
+    const tree = fullResult.prakriyaTree;
+    if (tree?.verified && tree.morphemes?.length) {
       prakriyaHtml = `
         <div style="margin-top: 0.85rem; padding-top: 0.75rem; border-top: 1px solid var(--bg-card-border);">
-          <div style="display: flex; justify-content: space-between; align-items: baseline; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.4rem;">
-            <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-main);">
-              🏛️ Pāṇiniovský derivační strom (vidyut-prakriya / Aṣṭādhyāyī):
-            </div>
-            <span style="font-size: 0.75rem; color: var(--text-muted);">${escapeHtml(tree.linguisticNotes.type)} (${tree.steps.length} kroků)</span>
+          <div style="font-weight: 600; font-size: 0.85rem; color: var(--text-main); margin-bottom: 0.3rem;">
+            🌳 Morfologická stavba (Pāṇini, vidyut-prakriya): ${escapeHtml(tree.linguisticNotes.type)}
           </div>
-          <div style="display: flex; flex-direction: column; gap: 0.35rem; max-height: 220px; overflow-y: auto;">
-            ${tree.steps.map(s => `
-              <div style="background: var(--bg-primary); border: 1px solid var(--bg-card-border); border-radius: 4px; padding: 0.3rem 0.55rem; display: flex; justify-content: space-between; align-items: baseline; gap: 0.5rem; font-size: 0.82rem;">
-                <span>
-                  <strong style="color: var(--text-muted); font-size: 0.78rem;">${s.stepNumber}.</strong>
-                  <code style="font-family: monospace; color: var(--accent-gold); font-size: 0.88rem;">${escapeHtml(s.termsIast)}</code>
-                  <span style="font-size: 0.75rem; color: var(--text-muted); margin-left: 0.35rem;">(${escapeHtml(s.termsDeva)})</span>
-                </span>
-                <a href="${s.sutraUrl}" target="_blank" rel="noopener noreferrer" style="font-size: 0.75rem; color: var(--accent-terracotta); text-decoration: underline;" title="Zobrazit pravidlo a komentář na Ashtadhyayi.com">
-                  Aṣṭ. ${escapeHtml(s.ruleCode)} ↗
-                </a>
-              </div>
-            `).join('')}
-          </div>
+          ${renderMorphologyHtml({
+            targetText: tree.targetText,
+            targetTranslit: tree.targetIast,
+            stemOrRoot: tree.stemOrRoot,
+            category: tree.category,
+            linguisticNotes: tree.linguisticNotes as Record<string, string>,
+            morphemes: tree.morphemes,
+            verified: tree.verified,
+            steps: tree.steps.map((st) => ({ ...st, ruleUrl: st.sutraUrl }))
+          }, 'cs')}
         </div>
       `;
     }
@@ -794,6 +790,7 @@ function setupEventListeners(): void {
 
       koshaProgressText.textContent = 'Ukládám do IndexedDB mezipaměti...';
       await saveKoshaZipToIndexedDb(blob, filenames, 'data-0.4.0.zip');
+      resetOfflineKosha();
 
       koshaProgressText.textContent = '✅ Slovník byl úspěšně stažen a uložen pro offline použití!';
       setTimeout(() => {
@@ -821,6 +818,7 @@ function setupEventListeners(): void {
     try {
       const filenames = await inspectZipArchive(file);
       await saveKoshaZipToIndexedDb(file, filenames, file.name);
+      resetOfflineKosha();
       koshaProgressBar.style.width = '100%';
       koshaProgressText.textContent = `✅ Soubor ${file.name} byl úspěšně uložen do IndexedDB!`;
       setTimeout(() => {
@@ -847,6 +845,7 @@ function setupEventListeners(): void {
   btnDeleteKosha.addEventListener('click', async () => {
     if (confirm('Opravdu chcete odstranit stažený slovník Vidyut z mezipaměti prohlížeče?')) {
       await deleteKoshaZipFromIndexedDb();
+      resetOfflineKosha();
       await updateKoshaDownloaderStatus();
       alert('Slovník byl odstraněn z mezipaměti prohlížeče.');
     }
@@ -858,6 +857,8 @@ function switchTab(tab: 'interactive' | 'editor' | 'sargeant' | 'transliteration
   tabEditorBtn.classList.toggle('active', tab === 'editor');
   tabSargeantBtn.classList.toggle('active', tab === 'sargeant');
   tabTransliterationBtn.classList.toggle('active', tab === 'transliteration');
+  // The translation workspace uses the full window width
+  document.body.classList.toggle('layout-wide', tab === 'editor');
 
   versesContainerEl.style.display = tab === 'interactive' ? 'block' : 'none';
   editorContainerEl.style.display = tab === 'editor' ? 'block' : 'none';
@@ -866,6 +867,9 @@ function switchTab(tab: 'interactive' | 'editor' | 'sargeant' | 'transliteration
   viewControlsEl.style.display = (tab === 'interactive' || tab === 'sargeant') ? 'block' : 'none';
 
   if (tab === 'editor' && mainEditorEl) {
+    // Compound splitting: the lexicon served with the app, plus the Vidyut kosha when downloaded
+    void loadStaticLexicon();
+    void loadOfflineKosha();
     mainEditorEl.document = activeDoc;
     if (activeDoc.verses.length > 0 && !mainEditorEl.verse) {
       mainEditorEl.verse = activeDoc.verses[0];

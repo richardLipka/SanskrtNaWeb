@@ -8,10 +8,16 @@ import {
   IMEController
 } from '../core/editor/virtualKeyboard.ts';
 import {
-  tokenizeTranslation,
-  toggleWordBinding,
-  autoSuggestBindings
+  autoSuggestBindings,
+  splitTranslationWords,
+  TranslationWord
 } from '../core/editor/alignmentTool.ts';
+import { splitToken, mergeCompound, parseManualSplit, SplitPartSpec } from '../core/editor/tokenOps.ts';
+import { rankSplits } from '../core/lemmatizer/compoundSplitter.ts';
+import { analyzeCompound } from '../core/lemmatizer/compoundService.ts';
+import { lookupMonierWilliams, MwLookupResult } from '../core/dictionaries/monierWilliams.ts';
+import { WordDerivationTree } from '../core/adapters/languageAdapter.ts';
+import { renderMorphologyHtml } from './morphologyView.ts';
 import {
   getTranslationSuggestions,
   findWordConcordance,
@@ -29,7 +35,7 @@ import {
   BookHierarchy
 } from '../core/corpus/bookManager.ts';
 import { defaultSanskritAdapter } from '../core/adapters/sanskritAdapter.ts';
-import { transliterateLipi } from '../core/lemmatizer/vidyutAdapter.ts';
+import { transliterateLipi, isVidyutReady, loadVidyutWasm } from '../core/lemmatizer/vidyutAdapter.ts';
 import {
   SupportedLanguage,
   formatGrammarAnalysis
@@ -44,7 +50,7 @@ import {
   saveWorkspaceBundleToCache
 } from '../core/storage/workspaceBundle.ts';
 import { getDictionaryUrl, sanitizeSearchLemma } from '../core/dictionaries/dictionaryBuilder.ts';
-import { escapeHtml } from '../core/utils/html.ts';
+import { escapeHtml, cssEscape, findAlignedRanges } from '../core/utils/html.ts';
 import {
   LLMConfig,
   LLMTaskType,
@@ -112,6 +118,13 @@ export const COMMENTARY_PRESETS: Record<string, Partial<CommentaryItem>> = {
   }
 };
 
+/** One proposed split, whichever source produced it */
+interface SplitSuggestion {
+  parts: Array<{ form: string; lemma: string; found: boolean; note?: string }>;
+  /** Where the split comes from, shown as a badge (corpus attestation, Monier-Williams) */
+  badges?: Array<{ text: string; title: string }>;
+}
+
 export class SanskritEditorElement extends HTMLElement {
   private _verse: Verse | null = null;
   private _document: SanskritDocument | null = null;
@@ -156,6 +169,22 @@ export class SanskritEditorElement extends HTMLElement {
   private _llmAbort: AbortController | null = null;
   private _toastTimer: ReturnType<typeof setTimeout> | null = null;
   private _toastEl: HTMLElement | null = null;
+
+  // Translation workspace state
+  private _previewOpen = false;
+  private _lastWordIndex: number | null = null;
+  private _splitState: {
+    tokenId: string;
+    loading: boolean;
+    items: SplitSuggestion[];
+    /** 'offline' = lexicon served with the app / Vidyut kosha, 'mw' = Monier-Williams online check */
+    source?: 'offline' | 'mw';
+    /** Readings of the whole word when the dictionary knows it as one word */
+    whole?: Array<{ lemma: string; label: string }>;
+    error?: string;
+  } | null = null;
+  private _mwState: { key: string; loading: boolean; result: MwLookupResult | null } | null = null;
+  private _morphState: { tokenId: string; loading: boolean; tree: WordDerivationTree | null | undefined } | null = null;
   private _llmError: string | null = null;
   private _showPromptPreview: boolean = false;
   private _showRawJsonResponse: boolean = false;
@@ -309,6 +338,10 @@ export class SanskritEditorElement extends HTMLElement {
     }
 
     this._onGlobalKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape' && this._previewOpen) {
+        this.setPreviewOpen(false);
+        return;
+      }
       // Shortcuts apply only while the editor is visible and focus is not elsewhere on the page
       // (e.g. in the reader tab or another app input).
       const active = document.activeElement;
@@ -376,6 +409,9 @@ export class SanskritEditorElement extends HTMLElement {
               📂 ${t('btnLoadProject', lang)}
               <input type="file" id="input-load-project-bundle" accept=".json,.sanskrit-project.json" style="display: none;">
             </label>
+            <button class="btn btn-outline ${this._previewOpen ? 'active' : ''}" id="btn-toggle-preview" title="${this._uiLang === 'cs' ? 'Náhled verše v čtečce' : 'Verse preview in the reader'}">
+              👁 ${this._uiLang === 'cs' ? 'Náhled' : 'Preview'}
+            </button>
             <button class="btn btn-outline ${this._showLLMPanel ? 'active' : ''}" id="btn-toggle-llm-panel" title="${t('llmToggleBtn', lang)}" style="border-color: var(--accent-gold);">
               🤖 ${t('llmToggleBtn', lang)}
             </button>
@@ -406,6 +442,7 @@ export class SanskritEditorElement extends HTMLElement {
           ${this._activeTab === 'corpus' ? this.renderCorpusTab() : ''}
           ${this._activeTab === 'index' ? this.renderIndexTab() : ''}
         </div>
+        ${this.renderPreviewOverlay()}
       </div>
     `;
 
@@ -955,86 +992,50 @@ export class SanskritEditorElement extends HTMLElement {
 
     const v = this._verse;
     const lang = this._uiLang;
+    const cs = lang === 'cs';
     const devaText = typeof v.scripts.devanagari === 'string' ? v.scripts.devanagari : v.scripts.devanagari.text;
     const iastText = typeof v.scripts.iast === 'string' ? v.scripts.iast : v.scripts.iast.text;
-
-    // Surrounding context (previous and next verses)
     const context = this.getSurroundingVerses();
+    const activeTrans = this.getActiveTranslation();
 
-    // Active translation
-    const activeTrans = v.translations.find((t) => t.id === this._activeTranslationId) ||
-                        v.translations[0] ||
-                        { id: 'cs_fluent', label: 'Plynulý český překlad', lang: 'cs', type: 'fluent', text: '' };
-    // Keep the active id in sync with what is displayed, otherwise word bindings and
-    // edits would be stored under a translation id the verse does not have.
-    this._activeTranslationId = activeTrans.id;
-
-    // Translation suggestions & Glossary
-    const suggestions = this.getGlossarySuggestions();
-    const activeToken = v.tokens.find((t) => t.id === this._selectedTokenId);
+    const ribbon = (cv: Verse, kind: 'prev' | 'next') => `
+      <div class="cat-context-ribbon ${kind}-context">
+        <span class="cat-context-badge">${kind === 'prev' ? '▲' : '▼'} ${t(kind === 'prev' ? 'contextPrev' : 'contextNext', lang)} (${escapeHtml(cv.number)})</span>
+        <span class="deva-font cat-context-deva">${escapeHtml(this.getVerseDevaText(cv))}</span>
+        <span class="cat-context-trans">„${escapeHtml(cv.translations[0]?.text || '—')}“</span>
+      </div>`;
 
     return `
-      <div class="editor-split-view">
-        <!-- LEFT PANE: CAT WORKSTATION -->
-        <div class="editor-left-pane">
-          <!-- CONTEXT RIBBON: PREVIOUS VERSE -->
-          ${
-            context.prev
-              ? `
-            <div class="cat-context-ribbon prev-context">
-              <span class="cat-context-badge">▲ ${t('contextPrev', lang)} (${escapeHtml(context.prev.number)})</span>
-              <span class="deva-font cat-context-deva">${escapeHtml(this.getVerseDevaText(context.prev))}</span>
-              <span class="cat-context-trans">„${escapeHtml(context.prev.translations[0]?.text || '—')}“</span>
-            </div>`
-              : ''
-          }
+      <div class="cat-workspace">
+        <!-- COLUMN 1: SOURCE TEXT -->
+        <section class="cat-col cat-col-source" aria-label="${cs ? 'Zdrojový text' : 'Source text'}">
+          ${context.prev ? ribbon(context.prev, 'prev') : ''}
 
-          <!-- Metadata & Meter -->
           <div class="editor-card">
-            <h4 class="editor-card-title">1. Metadata a metrum</h4>
-            <div class="editor-grid-3">
-              <label>
-                Číslo verše:
+            <h4 class="editor-card-title">${cs ? '1. Verš a metrum' : '1. Verse & meter'}</h4>
+            <div class="cat-meta-grid">
+              <label>${cs ? 'Číslo' : 'Number'}
                 <input type="text" id="edit-verse-number" value="${escapeHtml(v.number || '')}" class="form-input">
               </label>
-              <label>
-                Kniha:
+              <label>${cs ? 'Kniha' : 'Book'}
                 <input type="text" id="edit-verse-book" value="${escapeHtml(v.book || '')}" placeholder="např. Bhagavadgītā" class="form-input">
               </label>
-              <label>
-                Kapitola:
+              <label>${cs ? 'Kapitola' : 'Chapter'}
                 <input type="text" id="edit-verse-chapter" value="${escapeHtml(v.chapter || '')}" placeholder="např. 2. Sāṅkhyayoga" class="form-input">
               </label>
-            </div>
-            <div style="display: flex; gap: 0.5rem; align-items: flex-end; margin-top: 0.6rem;">
-              <label style="flex: 1;">
-                Metrum (Chandas):
-                <input type="text" id="edit-verse-meter" value="${escapeHtml(v.meter || '')}" placeholder="např. Anuṣṭubh (Śloka)" class="form-input">
+              <label>${cs ? 'Metrum (Chandas)' : 'Meter (Chandas)'}
+                <span class="cat-inline">
+                  <input type="text" id="edit-verse-meter" value="${escapeHtml(v.meter || '')}" placeholder="Anuṣṭubh (Śloka)" class="form-input">
+                  <button id="btn-auto-detect-meter" class="btn btn-sm btn-outline" title="${cs ? 'Rozpoznat metrum' : 'Detect meter'}">⚡</button>
+                </span>
               </label>
-              <button id="btn-auto-detect-meter" class="btn btn-outline" style="font-size: 0.8rem; padding: 0.45rem 0.75rem;">
-                ⚡ Rozpoznat metrum
-              </button>
             </div>
           </div>
 
-          <!-- IAST Diacritic Toolbar -->
           <div class="editor-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem;">
-              <h4 class="editor-card-title" style="margin: 0;">2. ${t('iastBarTitle', lang)}</h4>
-              <span style="font-size: 0.75rem; color: var(--text-muted);">${t('iastBarHelp', lang)}</span>
-            </div>
-            <div class="iast-toolbar">
-              ${IAST_CHARS.map(
-                (char) => `<button class="iast-key-btn" data-iast-insert="${char}">${char}</button>`
-              ).join('')}
-            </div>
-          </div>
-
-          <!-- Sanskrit Text Inputs -->
-          <div class="editor-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-              <h4 class="editor-card-title" style="margin: 0;">3. Dévanágarí & živý přepis</h4>
-              <div style="display: flex; gap: 0.4rem; align-items: center;">
+            <div class="cat-card-head">
+              <h4 class="editor-card-title">${cs ? '2. Dévanágarí a transliterace' : '2. Devanagari & transliteration'}</h4>
+              <div class="cat-inline">
                 <button class="btn btn-sm ${this._imeController?.isEnabled() ? 'btn-primary' : 'btn-outline'}" id="btn-toggle-ime">
                   ${this._imeController?.isEnabled() ? t('imeToggleOn', lang) : t('imeToggleOff', lang)}
                 </button>
@@ -1043,175 +1044,643 @@ export class SanskritEditorElement extends HTMLElement {
                 </button>
               </div>
             </div>
-
-            <!-- Paninian Visual Keyboard (Collapsible) -->
             ${this._showPaninianKeyboard ? this.renderPaninianKeyboard() : ''}
-
-            <label style="display: block; margin-top: 0.5rem;">
-              Text v dévanágarí:
-              <textarea id="edit-verse-devanagari" class="editor-textarea deva-font" rows="3">${escapeHtml(devaText)}</textarea>
-            </label>
-
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.8rem; margin-bottom: 0.3rem;">
-              <span style="font-size: 0.85rem; font-weight: 600;">Transliterace (IAST):</span>
-              <button class="btn btn-sm btn-outline" id="btn-auto-transliterate-iast">
-                🔄 Přegenerovat z Dévanágarí
-              </button>
+            <textarea id="edit-verse-devanagari" class="editor-textarea deva-font" rows="3" aria-label="Dévanágarí">${escapeHtml(devaText)}</textarea>
+            <div class="cat-card-head" style="margin-top: 0.6rem;">
+              <span class="cat-field-label">IAST</span>
+              <button class="btn btn-sm btn-outline" id="btn-auto-transliterate-iast">🔄 ${cs ? 'Z dévanágarí' : 'From Devanagari'}</button>
             </div>
-            <textarea id="edit-verse-iast" class="editor-textarea" rows="2">${escapeHtml(iastText)}</textarea>
+            <textarea id="edit-verse-iast" class="editor-textarea" rows="2" aria-label="IAST">${escapeHtml(iastText)}</textarea>
+            <div class="iast-toolbar" title="${t('iastBarHelp', lang)}">
+              ${IAST_CHARS.map((char) => `<button class="iast-key-btn" data-iast-insert="${char}">${char}</button>`).join('')}
+            </div>
           </div>
 
-          <!-- Sanskrit Tokens, Morphological Analyzer & On-Demand Grammar Highlights -->
-          <div class="editor-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-              <div style="display: flex; align-items: center; gap: 0.6rem;">
-                <h4 class="editor-card-title" style="margin: 0;">4. Sanskrtská slova & gramatická struktura</h4>
-                <label style="font-size: 0.78rem; font-weight: 600; display: flex; align-items: center; gap: 0.3rem; cursor: pointer;">
-                  <input type="checkbox" id="toggle-grammar-highlights" ${this._showGrammarHighlights ? 'checked' : ''}>
-                  🎨 ${t('grammarHighlightsToggle', lang)}
-                </label>
-              </div>
-              <button class="btn btn-sm btn-outline" id="btn-split-and-lemmatize">
-                ✂️ Rozdělit na slova a analyzovat (WASM)
-              </button>
-            </div>
+          ${context.next ? ribbon(context.next, 'next') : ''}
+        </section>
 
-            <!-- Token Pills with On-Demand Grammar Highlights -->
-            <div class="token-pills-list">
-              ${v.tokens
-                .map((tk) => {
-                  const isSelected = tk.id === this._selectedTokenId;
-                  const gAnalysis = formatGrammarAnalysis(tk.grammar, lang);
-                  const styleBorder = this._showGrammarHighlights ? `border-left: 4px solid ${gAnalysis.categoryColor};` : '';
-
-                  return `
-                  <button class="editor-token-pill ${isSelected ? 'active' : ''}" data-token-select="${escapeHtml(tk.id)}" style="${styleBorder}">
-                    <span class="deva-part">${escapeHtml(tk.text.devanagari)}</span>
-                    <span class="iast-part">${escapeHtml(tk.text.iast)}</span>
-                    ${this._showGrammarHighlights && gAnalysis.shortBadge !== '—' ? `<span class="cat-grammar-badge" style="background: ${gAnalysis.categoryColor}20; color: ${gAnalysis.categoryColor};">${escapeHtml(gAnalysis.shortBadge)}</span>` : ''}
-                  </button>`;
-                })
-                .join('')}
-            </div>
-
-            <!-- Active Word Philological Inspector -->
-            ${this.renderActiveTokenDetail(activeToken)}
-          </div>
-
-          <!-- CAT Translation Window & Integrated Termbase -->
-          <div class="editor-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-              <h4 class="editor-card-title" style="margin: 0;">5. ${t('editorTabEdit', lang)}</h4>
-              <div style="display: flex; gap: 0.4rem; align-items: center;">
-                <select id="edit-trans-select" class="layer-subselect" style="font-size: 0.8rem; padding: 2px 6px;">
-                  ${v.translations
-                    .map(
-                      (t) => `
-                    <option value="${escapeHtml(t.id)}" ${t.id === activeTrans.id ? 'selected' : ''}>
-                      [${escapeHtml(t.lang)}] ${escapeHtml(t.label)}
-                    </option>`
-                    )
-                    .join('')}
+        <!-- COLUMN 2: TRANSLATION + WORD ALIGNMENT -->
+        <section class="cat-col cat-col-board" aria-label="${cs ? 'Překlad a vazby' : 'Translation & alignment'}">
+          <div class="editor-card cat-translation-card">
+            <div class="cat-card-head">
+              <h4 class="editor-card-title">${cs ? '3. Překlad' : '3. Translation'}</h4>
+              <div class="cat-inline">
+                <select id="edit-trans-select" class="layer-subselect" aria-label="${cs ? 'Překlad' : 'Translation'}">
+                  ${v.translations.map((tr) => `
+                    <option value="${escapeHtml(tr.id)}" ${tr.id === activeTrans.id ? 'selected' : ''}>[${escapeHtml(tr.lang)}] ${escapeHtml(tr.label)}</option>`).join('')}
                 </select>
-                <button class="btn btn-sm btn-outline" id="btn-add-translation">➕ Přidat překlad</button>
+                <button class="btn btn-sm btn-outline" id="btn-add-translation">➕ ${cs ? 'Přidat překlad' : 'Add translation'}</button>
               </div>
             </div>
-
-            <!-- Integrated Termbase & Auto-Glossary Suggestions -->
-            <div class="glossary-suggestions-box">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.35rem;">
-                <div class="glossary-title">
-                  ${t('glossaryTitle', lang)}
-                </div>
-                <button class="btn btn-sm btn-outline" id="btn-quick-add-glossary-term" style="font-size: 0.72rem; padding: 1px 6px;">
-                  ${t('glossaryAddTerm', lang)}
-                </button>
-              </div>
-
-              <div class="glossary-pills">
-                ${
-                  suggestions.length > 0
-                    ? suggestions
-                        .map(
-                          (s) => `
-                      <button class="glossary-pill" data-glossary-apply="${escapeHtml(s.translation)}" title="${t('glossaryInOtherVerse', lang)} ${escapeHtml(s.verseNumber)} (${s.frequency}x)">
-                        <strong>${escapeHtml(s.targetWord)}</strong> &rarr; „${escapeHtml(s.translation)}“ <em>(${escapeHtml(s.verseNumber)})</em>
-                      </button>`
-                        )
-                        .join('')
-                    : `<span style="font-size: 0.78rem; color: var(--text-muted);">${t('glossaryInsertHint', lang)}</span>`
-                }
-              </div>
-            </div>
-
-            <!-- Translation Textarea -->
-            <textarea id="edit-trans-text" class="editor-textarea" rows="3" placeholder="Zadejte překlad verše">${escapeHtml(activeTrans.text || '')}</textarea>
-
-            <!-- Navigation Controls directly under translation -->
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-top: 0.75rem; flex-wrap: wrap; gap: 0.5rem;">
-              <div style="font-size: 0.78rem; color: var(--text-muted);">
-                💡 <em>Zkratka: Ctrl + Enter pro uložení a přechod na další verš</em>
-              </div>
-              <div style="display: flex; gap: 0.4rem;">
+            <textarea id="edit-trans-text" class="editor-textarea cat-translation-text" rows="4" lang="${escapeHtml(activeTrans.lang)}" placeholder="${cs ? 'Zadejte překlad verše' : 'Type the translation'}">${escapeHtml(activeTrans.text || '')}</textarea>
+            <div class="cat-card-head" style="margin-top: 0.6rem;">
+              <span class="cat-hint-text">💡 ${cs ? 'Ctrl + Enter uloží verš a přejde na další' : 'Ctrl + Enter saves and moves to the next verse'}</span>
+              <span class="cat-inline">
                 <button class="btn btn-sm btn-outline" id="btn-bottom-prev">◀ ${t('btnPrevVerse', lang)}</button>
                 <button class="btn btn-sm btn-primary" id="btn-bottom-save-next">💾 ${t('btnSaveAndNext', lang)}</button>
-              </div>
-            </div>
-          </div>
-
-          <!-- Word-to-Translation Alignment Tool -->
-          <div class="editor-card">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.5rem;">
-              <h4 class="editor-card-title" style="margin: 0;">6. ${t('alignTitle', lang)}</h4>
-              <div style="display: flex; gap: 0.4rem;">
-                <button class="btn btn-sm btn-outline" id="btn-auto-align" title="${t('alignAuto', lang)}">
-                  ${t('alignAuto', lang)}
-                </button>
-                <button class="btn btn-sm btn-danger" id="btn-clear-token-align" title="${t('alignClear', lang)}">
-                  ${t('alignClear', lang)}
-                </button>
-              </div>
-            </div>
-
-            <p style="font-size: 0.82rem; color: var(--text-secondary); margin-bottom: 0.6rem;">
-              ${t('alignHelp', lang)}:
-            </p>
-
-            ${this.renderAlignmentWords(activeTrans.id, activeTrans.text)}
-          </div>
-
-          <!-- Commentaries & Exegesis Panel (Simultaneous Multi-Author Display & Live Editing) -->
-          ${this.renderCommentariesCard(v)}
-
-          <!-- CONTEXT RIBBON: NEXT VERSE -->
-          ${
-            context.next
-              ? `
-            <div class="cat-context-ribbon next-context">
-              <span class="cat-context-badge">▼ ${t('contextNext', lang)} (${escapeHtml(context.next.number)})</span>
-              <span class="deva-font cat-context-deva">${escapeHtml(this.getVerseDevaText(context.next))}</span>
-              <span class="cat-context-trans">„${escapeHtml(context.next.translations[0]?.text || '—')}“</span>
-            </div>`
-              : ''
-          }
-        </div>
-
-        <!-- RIGHT PANE: LIVE SPLIT-VIEW PREVIEW -->
-        <div class="editor-right-pane">
-          <div class="preview-sticky-box">
-            <div class="preview-header">
-              <span style="font-weight: bold; font-size: 0.95rem;">${t('livePreviewTitle', lang)}</span>
-              <span style="font-size: 0.78rem; background: var(--bg-card); border: 1px solid var(--accent-gold); padding: 2px 8px; border-radius: 12px; color: var(--accent-gold);">
-                ${t('liveSyncBadge', lang)}
               </span>
             </div>
-            <div id="editor-preview-mount" style="padding: 1rem;">
-              <!-- Mounted <sanskrit-verse> -->
-            </div>
           </div>
+
+          <div class="editor-card" id="align-board-mount">
+            ${this.renderAlignmentBoard()}
+          </div>
+        </section>
+
+        <!-- COLUMN 3: HINTS FOR THE SELECTED WORD -->
+        <aside class="cat-col cat-col-hints" id="hints-mount" aria-label="${cs ? 'Nápověda ke slovu' : 'Word hints'}">
+          ${this.renderTokenHints()}
+        </aside>
+      </div>
+
+      <div class="cat-commentaries-row">
+        ${this.renderCommentariesCard(v)}
+      </div>
+    `;
+  }
+
+  /** The translation being edited (falls back to the first one, or a new Czech one). */
+  private getActiveTranslation(): { id: string; label: string; lang: string; type: string; text: string } {
+    const v = this._verse!;
+    const activeTrans = v.translations.find((tr) => tr.id === this._activeTranslationId) ||
+      v.translations[0] ||
+      { id: 'cs_fluent', label: 'Plynulý český překlad', lang: 'cs', type: 'fluent', text: '' };
+    // Keep the active id in sync with what is displayed, otherwise word bindings and
+    // edits would be stored under a translation id the verse does not have.
+    this._activeTranslationId = activeTrans.id;
+    return activeTrans;
+  }
+
+  private tokenColor(index: number): string {
+    return `hsl(${(index * 47 + 25) % 360} 62% 40%)`;
+  }
+
+  /**
+   * Word links of the active translation: which word chips belong to which token,
+   * plus phrases that no longer occur in the translation text.
+   */
+  private computeAlignmentState(text: string) {
+    const v = this._verse!;
+    const words = splitTranslationWords(text);
+    const tokensByWord = new Map<number, string[]>();
+    const phrasesByToken = new Map<string, Array<{ phrase: string; found: boolean }>>();
+
+    v.tokens.forEach((tk) => {
+      const phrases = tk.alignment?.matched_words?.[this._activeTranslationId] || [];
+      const list: Array<{ phrase: string; found: boolean }> = [];
+      for (const phrase of phrases) {
+        const range = findAlignedRanges(text, [{ phrase, tokenId: tk.id }])[0];
+        list.push({ phrase, found: Boolean(range) });
+        if (!range) continue;
+        for (const w of words) {
+          if (w.start < range.end && w.end > range.start) {
+            tokensByWord.set(w.index, [...(tokensByWord.get(w.index) || []), tk.id]);
+          }
+        }
+      }
+      if (list.length) phrasesByToken.set(tk.id, list);
+    });
+    return { words, tokensByWord, phrasesByToken };
+  }
+
+  private renderAlignmentBoard(): string {
+    if (!this._verse) return '';
+    const v = this._verse;
+    const lang = this._uiLang;
+    const cs = lang === 'cs';
+    const trans = this.getActiveTranslation();
+    const { words, tokensByWord, phrasesByToken } = this.computeAlignmentState(trans.text || '');
+    const colorOf = new Map(v.tokens.map((tk, i) => [tk.id, this.tokenColor(i)]));
+
+    const tokenTip = (tk: Token, layer: 'deva' | 'iast') => {
+      const g = formatGrammarAnalysis(tk.grammar, lang);
+      const meaning = tk.vocabulary?.meanings_by_lang?.[trans.lang]?.contextual || tk.vocabulary?.meanings_by_lang?.cs?.contextual || '';
+      return [
+        layer === 'deva' ? `IAST: ${tk.text.iast}` : `Dévanágarí: ${tk.text.devanagari}`,
+        tk.lemma ? `lemma: ${tk.lemma}` : '',
+        g.fullLabel && g.fullLabel !== '—' ? g.fullLabel : '',
+        meaning ? `${cs ? 'význam' : 'meaning'}: ${meaning}` : '',
+        tk.compound?.is_compound_member ? `${cs ? 'člen složeniny' : 'compound member'}: ${tk.compound.analysis}` : ''
+      ].filter(Boolean).join('\n');
+    };
+
+    const srcChip = (tk: Token, layer: 'deva' | 'iast') => {
+      const linked = phrasesByToken.get(tk.id)?.length || 0;
+      const g = formatGrammarAnalysis(tk.grammar, lang);
+      return `
+        <button class="align-chip align-src ${tk.id === this._selectedTokenId ? 'is-selected' : ''} ${linked ? 'is-linked' : ''} ${tk.compound?.is_compound_member ? 'is-member' : ''}"
+          data-token-select="${escapeHtml(tk.id)}" data-layer="${layer}" data-tip="${escapeHtml(tokenTip(tk, layer))}"
+          style="--tok-color: ${colorOf.get(tk.id)}; ${this._showGrammarHighlights ? `--gram-color: ${g.categoryColor};` : ''}">
+          <span class="${layer === 'deva' ? 'deva-font' : 'iast-font'}">${escapeHtml(layer === 'deva' ? tk.text.devanagari : tk.text.iast)}</span>
+          ${linked ? `<span class="align-chip-count">${linked}</span>` : ''}
+        </button>`;
+    };
+
+    const wordChip = (w: TranslationWord) => {
+      const ids = tokensByWord.get(w.index) || [];
+      const mine = this._selectedTokenId ? ids.includes(this._selectedTokenId) : false;
+      const linkedNames = ids.map((id) => v.tokens.find((tk) => tk.id === id)).filter(Boolean)
+        .map((tk) => `${tk!.text.devanagari} · ${tk!.text.iast}`).join('\n');
+      return `
+        <button class="align-chip align-word ${ids.length ? 'is-linked' : ''} ${mine ? 'is-mine' : ''}"
+          data-word-index="${w.index}" data-linked-tokens="${escapeHtml(ids.join(' '))}"
+          ${linkedNames ? `data-tip="${escapeHtml(linkedNames)}"` : ''}
+          style="${ids.length ? `--tok-color: ${colorOf.get(ids[0])};` : ''}">${escapeHtml(w.word)}</button>`;
+    };
+
+    const linkRows = v.tokens
+      .filter((tk) => phrasesByToken.has(tk.id))
+      .map((tk) => `
+        <div class="align-link-row ${tk.id === this._selectedTokenId ? 'is-selected' : ''}" style="--tok-color: ${colorOf.get(tk.id)};">
+          <button class="align-link-src" data-token-select="${escapeHtml(tk.id)}">
+            <span class="deva-font">${escapeHtml(tk.text.devanagari)}</span> <em>${escapeHtml(tk.text.iast)}</em>
+          </button>
+          <span class="align-link-arrow">→</span>
+          ${phrasesByToken.get(tk.id)!.map((p) => `
+            <span class="align-link-phrase ${p.found ? '' : 'is-missing'}" title="${p.found ? '' : (cs ? 'Ve znění překladu se nevyskytuje' : 'Not found in the translation text')}">
+              ${p.found ? '' : '⚠ '}${escapeHtml(p.phrase)}
+              <button class="align-unlink" data-unlink-token="${escapeHtml(tk.id)}" data-unlink-phrase="${escapeHtml(p.phrase)}" aria-label="${cs ? 'Zrušit vazbu' : 'Remove link'}" title="${cs ? 'Zrušit vazbu' : 'Remove link'}">×</button>
+            </span>`).join('')}
+        </div>`).join('');
+
+    return `
+      <div class="cat-card-head">
+        <h4 class="editor-card-title">${cs ? '4. Slova a vazby na překlad' : '4. Words & translation links'}</h4>
+        <div class="cat-inline">
+          <label class="cat-check"><input type="checkbox" id="toggle-grammar-highlights" ${this._showGrammarHighlights ? 'checked' : ''}> 🎨 ${t('grammarHighlightsToggle', lang)}</label>
+          <button class="btn btn-sm btn-outline" id="btn-split-and-lemmatize" title="${cs ? 'Rozdělit IAST na slova a analyzovat' : 'Split the IAST text into words and analyze'}">✂️ ${cs ? 'Rozdělit verš na slova' : 'Tokenize verse'}</button>
+          <button class="btn btn-sm btn-outline" id="btn-auto-align">${t('alignAuto', lang)}</button>
+          <button class="btn btn-sm btn-danger" id="btn-clear-token-align" ${this._selectedTokenId ? '' : 'disabled'}>${t('alignClear', lang)}</button>
+        </div>
+      </div>
+      <p class="cat-hint-text">
+        ${cs
+          ? 'Vyberte sanskrtské slovo (v řádku dévanágarí nebo IAST) a klikněte na slova překladu. Opětovné kliknutí vazbu zruší, Shift + klik přiřadí celý úsek od posledního slova. Najetí myší ukáže propojená slova ve všech vrstvách.'
+          : 'Pick a Sanskrit word (Devanagari or IAST row), then click translation words. Clicking again removes the link, Shift + click links the whole span since the last word. Hover shows linked words in all layers.'}
+      </p>
+      ${v.tokens.length === 0 ? `
+        <div class="cat-empty">${cs ? 'Verš zatím nemá slova – použijte „Rozdělit verš na slova“.' : 'The verse has no words yet – use “Tokenize verse”.'}</div>
+      ` : `
+        <div class="align-board">
+          <div class="align-row"><div class="align-row-label">Dévanágarí</div><div class="align-row-items">${v.tokens.map((tk) => srcChip(tk, 'deva')).join('')}</div></div>
+          <div class="align-row"><div class="align-row-label">IAST</div><div class="align-row-items">${v.tokens.map((tk) => srcChip(tk, 'iast')).join('')}</div></div>
+          <div class="align-row align-row-target"><div class="align-row-label">${cs ? 'Překlad' : 'Translation'} [${escapeHtml(trans.lang)}]</div>
+            <div class="align-row-items">${words.length ? words.map(wordChip).join('') : `<span class="cat-hint-text">${cs ? 'Překlad je prázdný.' : 'The translation is empty.'}</span>`}</div>
+          </div>
+        </div>
+        <div class="align-links">
+          <div class="align-links-title">${cs ? 'Vazby' : 'Links'} (${phrasesByToken.size}/${v.tokens.length})</div>
+          ${linkRows || `<span class="cat-hint-text">${cs ? 'Zatím žádné vazby.' : 'No links yet.'}</span>`}
+        </div>
+      `}
+    `;
+  }
+
+  private renderTokenHints(): string {
+    const v = this._verse;
+    const lang = this._uiLang;
+    const cs = lang === 'cs';
+    const tk = v?.tokens.find((t) => t.id === this._selectedTokenId);
+    if (!v || !tk) {
+      return `<div class="editor-card hint-card"><p class="cat-hint-text">${cs ? 'Vyberte slovo ve sloupci „Slova a vazby“ – zde se zobrazí rozbor, slovník, rozdělení složeniny a návrhy překladu.' : 'Select a word in “Words & links” to see its analysis, dictionary, compound split and translation suggestions.'}</p></div>`;
+    }
+
+    const trans = this.getActiveTranslation();
+    const g = formatGrammarAnalysis(tk.grammar, lang);
+    const lemma = sanitizeSearchLemma(tk.lemma || tk.text.iast);
+    const meaning = tk.vocabulary?.meanings_by_lang?.[trans.lang]?.contextual ||
+      (trans.lang === 'cs' ? tk.vocabulary?.contextual_meaning_cs : trans.lang === 'en' ? tk.vocabulary?.contextual_meaning_en : '') || '';
+    const suggestions = this.getGlossarySuggestions();
+    const split = this._splitState?.tokenId === tk.id ? this._splitState : null;
+    const mw = this._mwState?.key === lemma ? this._mwState : null;
+    const morph = this._morphState?.tokenId === tk.id ? this._morphState : null;
+    const links: Array<[string, string]> = [
+      ['📖 Monier-Williams', getDictionaryUrl(lemma, 'cologne_mw')],
+      ['📖 Apte', getDictionaryUrl(lemma, 'cologne_apte')],
+      ['🌐 WisdomLib', getDictionaryUrl(lemma, 'wisdomlib')],
+      ['⚡ Ambuda', getDictionaryUrl(lemma, 'ambuda')]
+    ];
+
+    return `
+      <div class="editor-card hint-card hint-token">
+        <div class="hint-token-head">
+          <span class="deva-font hint-token-deva">${escapeHtml(tk.text.devanagari)}</span>
+          <span class="hint-token-iast">${escapeHtml(tk.text.iast)}</span>
+          <span class="cat-grammar-badge" style="background: ${g.categoryColor}20; color: ${g.categoryColor};">${escapeHtml(g.fullLabel)}</span>
+        </div>
+        ${tk.compound?.is_compound_member ? `<div class="cat-hint-text">🔗 ${cs ? 'člen složeniny' : 'compound member of'} <em>${escapeHtml(tk.compound.analysis || '')}</em></div>` : ''}
+        ${g.details.length ? `<div class="cat-grammar-detail-tags">${g.details.map((d) => `<div class="cat-grammar-tag"><span class="tag-title">${escapeHtml(d.title)}:</span> <span class="tag-value">${escapeHtml(d.value)}</span></div>`).join('')}</div>` : ''}
+        <div class="hint-fields">
+          <label>${cs ? 'Lemma (slovníkový tvar)' : 'Lemma (dictionary form)'}<input type="text" id="edit-token-lemma" value="${escapeHtml(tk.lemma || '')}" class="form-input"></label>
+          <label>${cs ? 'Gramatika (poznámka)' : 'Grammar (note)'}<input type="text" id="edit-token-grammar" value="${escapeHtml(tk.grammar?.label_cs || '')}" class="form-input"></label>
+          <label>${cs ? 'Význam v kontextu' : 'Contextual meaning'} [${escapeHtml(trans.lang)}]<input type="text" id="edit-token-meaning" value="${escapeHtml(meaning)}" class="form-input"></label>
+        </div>
+      </div>
+
+      <div class="editor-card hint-card glossary-suggestions-box">
+        <div class="cat-card-head">
+          <div class="glossary-title">${t('glossaryTitle', lang)}</div>
+          <button class="btn btn-sm btn-outline" id="btn-quick-add-glossary-term">${t('glossaryAddTerm', lang)}</button>
+        </div>
+        <div class="glossary-pills">
+          ${suggestions.length > 0
+            ? suggestions.map((s) => `
+              <button class="glossary-pill" data-glossary-apply="${escapeHtml(s.translation)}" title="${t('glossaryInOtherVerse', lang)} ${escapeHtml(s.verseNumber)} (${s.frequency}x)">
+                <strong>${escapeHtml(s.targetWord)}</strong> &rarr; „${escapeHtml(s.translation)}“ <em>(${escapeHtml(s.verseNumber)})</em>
+              </button>`).join('')
+            : `<span class="cat-hint-text">${t('glossaryInsertHint', lang)}</span>`}
+        </div>
+      </div>
+
+      <div class="editor-card hint-card">
+        <div class="cat-card-head">
+          <h5 class="hint-title">📚 ${cs ? 'Slovník' : 'Dictionary'}: <code>${escapeHtml(lemma)}</code></h5>
+          <button class="btn btn-sm btn-outline" id="btn-load-mw" ${mw?.loading ? 'disabled' : ''}>${mw?.loading ? '⏳' : (cs ? 'Heslo z Monier-Williams' : 'Monier-Williams entry')}</button>
+        </div>
+        ${mw?.result ? (mw.result.found ? `
+          <ol class="mw-senses">
+            ${mw.result.senses.slice(0, 4).map((s) => `<li>${escapeHtml(s.text.length > 320 ? `${s.text.slice(0, 319)}…` : s.text)}</li>`).join('')}
+          </ol>` : `<p class="cat-hint-text">${mw.result.error ? (cs ? 'Slovník není dostupný (offline?).' : 'Dictionary unavailable (offline?).') : (cs ? `„${escapeHtml(lemma)}“ v MW nenalezeno – zkuste upravit lemma nebo rozdělit složeninu.` : `“${escapeHtml(lemma)}” not in MW – adjust the lemma or split the compound.`)}</p>`) : ''}
+        <div class="dict-btn-grid">
+          ${links.map(([label, url]) => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">${label}</a>`).join('')}
+        </div>
+      </div>
+
+      <div class="editor-card hint-card">
+        <div class="cat-card-head">
+          <h5 class="hint-title">✂️ ${cs ? 'Složenina / sandhi' : 'Compound / sandhi'}</h5>
+          <span class="cat-inline">
+            ${tk.compound?.is_compound_member ? `<button class="btn btn-sm btn-outline" id="btn-merge-compound">${cs ? 'Spojit zpět' : 'Merge back'}</button>` : ''}
+            <button class="btn btn-sm btn-outline" id="btn-propose-split" ${split?.loading ? 'disabled' : ''}>${split?.loading ? '⏳' : (cs ? 'Navrhnout rozdělení' : 'Suggest split')}</button>
+          </span>
+        </div>
+        ${split && !split.loading && split.whole?.length ? `<p class="cat-hint-text">📖 ${cs ? 'Slovník zná i celé slovo' : 'The dictionary also knows the whole word'}: ${split.whole.map((w) => `<strong>${escapeHtml(w.lemma)}</strong> <small>${escapeHtml(w.label)}</small>`).join(', ')}</p>` : ''}
+        ${split && !split.loading ? (split.items.length ? `
+          <ul class="split-candidates">
+            ${split.items.map((c, i) => `
+              <li>
+                <button class="btn btn-sm btn-outline" data-apply-split="${i}">${cs ? 'Rozdělit' : 'Split'}</button>
+                ${(c.badges || []).map((b) => `<span class="split-badge" title="${escapeHtml(b.title)}">${escapeHtml(b.text)}</span>`).join('')}
+                ${c.parts.map((p) => `<span class="split-part ${p.found ? 'is-found' : 'is-unknown'}" title="${escapeHtml(p.note || (p.found ? '' : (cs ? 've slovníku nenalezeno' : 'not in the dictionary')))}">${p.found ? '✓' : '?'} ${escapeHtml(p.form)}${p.lemma !== p.form ? ` <small>(${escapeHtml(p.lemma)})</small>` : ''}</span>`).join(' + ')}
+              </li>`).join('')}
+          </ul>` : `<p class="cat-hint-text">${escapeHtml(split.error || (cs ? 'Nenalezeno žádné rozdělení potvrzené slovníkem.' : 'No dictionary-confirmed split found.'))}</p>`) : ''}
+        <div class="cat-inline" style="margin-top: 0.4rem;">
+          <input type="text" id="manual-split-input" class="form-input" placeholder="${cs ? 'ručně, např. dharma + kṣetre' : 'manual, e.g. dharma + kṣetre'}" aria-label="${cs ? 'Ruční rozdělení' : 'Manual split'}">
+          <button class="btn btn-sm btn-outline" id="btn-apply-manual-split">${cs ? 'Rozdělit' : 'Split'}</button>
+        </div>
+        <p class="cat-hint-text">${split?.source === 'mw'
+          ? (cs ? 'Návrhy: obrácení sandhi z Vidyut, části ověřené online v Monier-Williams (Kolín), jen na dvě části – data pro rozdělování složenin nejsou k dispozici.' : 'Suggestions: sandhi reversal by Vidyut, parts confirmed online in Monier-Williams (Cologne), two parts only – the compound data is not available.')
+          : (cs ? 'Návrhy: rozdělení doložená v Digital Corpus of Sanskrit (DCS), jinak obrácení sandhi z Vidyut a členy ze slovníku Monier-Williams a DCS seřazené podle četnosti; stažený slovník Vidyut (karta Slovník) zpřesní tvary. Spojovníky (dharma-kṣetre) se dělí automaticky.' : 'Suggestions: splits attested in the Digital Corpus of Sanskrit (DCS), otherwise sandhi reversal by Vidyut with members from Monier-Williams and the DCS ranked by frequency; the downloaded Vidyut dictionary (Dictionary tab) refines the word forms. Hyphens (dharma-kṣetre) are split automatically.')}</p>
+      </div>
+
+      <div class="editor-card hint-card">
+        <div class="cat-card-head">
+          <h5 class="hint-title">🌳 ${cs ? 'Morfologická stavba (odvození)' : 'Morphology (derivation)'}</h5>
+          <button class="btn btn-sm btn-outline" id="btn-load-morph" ${morph?.loading ? 'disabled' : ''}>${morph?.loading ? '⏳' : (cs ? 'Odvodit' : 'Derive')}</button>
+        </div>
+        ${morph && !morph.loading ? this.renderMorphology(morph.tree) : ''}
+      </div>
+    `;
+  }
+
+  /** Root / prefixes / suffixes of a verified Pāṇinian derivation, rule list on demand. */
+  private renderMorphology(tree: WordDerivationTree | undefined | null): string {
+    return renderMorphologyHtml(tree, this._uiLang);
+  }
+
+  private renderPreviewOverlay(): string {
+    const cs = this._uiLang === 'cs';
+    return `
+      <div class="editor-preview-overlay ${this._previewOpen ? 'is-open' : ''}" id="editor-preview-overlay" ${this._previewOpen ? '' : 'hidden'}>
+        <div class="editor-preview-backdrop" data-close-preview></div>
+        <div class="editor-preview-panel" role="dialog" aria-modal="true" aria-label="${cs ? 'Náhled verše' : 'Verse preview'}">
+          <div class="preview-header">
+            <strong>👁 ${t('livePreviewTitle', this._uiLang)}</strong>
+            <button class="btn btn-sm btn-outline" id="btn-close-preview" aria-label="${cs ? 'Zavřít náhled' : 'Close preview'}">✕</button>
+          </div>
+          <div id="editor-preview-mount"></div>
         </div>
       </div>
     `;
+  }
+
+  /** Re-renders only the alignment board (keeps focus in the translation textarea). */
+  private refreshBoard() {
+    const mount = this.querySelector('#align-board-mount');
+    if (!mount) return;
+    mount.innerHTML = this.renderAlignmentBoard();
+    this.bindBoardEvents();
+  }
+
+  /** Re-renders only the hints column. */
+  private refreshHints() {
+    const mount = this.querySelector('#hints-mount');
+    if (!mount) return;
+    mount.innerHTML = this.renderTokenHints();
+    this.bindHintEvents();
+  }
+
+  private selectToken(tokenId: string) {
+    this._selectedTokenId = tokenId;
+    this._lastWordIndex = null;
+    this.refreshBoard();
+    this.refreshHints();
+  }
+
+  private bindBoardEvents() {
+    const board = this.querySelector('#align-board-mount');
+    if (!board || !this._verse) return;
+
+    board.querySelectorAll('[data-token-select]').forEach((el) => {
+      el.addEventListener('click', () => {
+        const id = el.getAttribute('data-token-select');
+        if (id) this.selectToken(id);
+      });
+    });
+
+    // Hover / focus highlights the same token in every layer and its linked words
+    const highlight = (ids: string[], on: boolean) => {
+      for (const id of ids) {
+        board.querySelectorAll(`[data-token-select="${cssEscape(id)}"]`).forEach((el) => el.classList.toggle('is-hl', on));
+        board.querySelectorAll('[data-linked-tokens]').forEach((el) => {
+          if ((el.getAttribute('data-linked-tokens') || '').split(' ').includes(id)) el.classList.toggle('is-hl', on);
+        });
+      }
+    };
+    board.querySelectorAll('.align-chip').forEach((el) => {
+      const ids = () => {
+        const src = el.getAttribute('data-token-select');
+        return src ? [src] : (el.getAttribute('data-linked-tokens') || '').split(' ').filter(Boolean);
+      };
+      el.addEventListener('mouseenter', () => highlight(ids(), true));
+      el.addEventListener('mouseleave', () => highlight(ids(), false));
+      el.addEventListener('focus', () => highlight(ids(), true));
+      el.addEventListener('blur', () => highlight(ids(), false));
+    });
+
+    board.querySelectorAll('[data-word-index]').forEach((el) => {
+      el.addEventListener('click', (e) => this.onWordChipClick(Number(el.getAttribute('data-word-index')), (e as MouseEvent).shiftKey));
+    });
+
+    board.querySelectorAll('[data-unlink-token]').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const tk = this._verse?.tokens.find((t) => t.id === el.getAttribute('data-unlink-token'));
+        const phrase = el.getAttribute('data-unlink-phrase') || '';
+        if (!tk) return;
+        const list = tk.alignment?.matched_words?.[this._activeTranslationId] || [];
+        tk.alignment.matched_words[this._activeTranslationId] = list.filter((p) => p !== phrase);
+        this.refreshBoard();
+        this.updateLivePreview();
+      });
+    });
+
+    (board.querySelector('#toggle-grammar-highlights') as HTMLInputElement | null)?.addEventListener('change', (e) => {
+      this._showGrammarHighlights = (e.target as HTMLInputElement).checked;
+      this.refreshBoard();
+    });
+    board.querySelector('#btn-split-and-lemmatize')?.addEventListener('click', () => this.autoSplitAndLemmatize());
+    board.querySelector('#btn-auto-align')?.addEventListener('click', () => {
+      if (!this._verse) return;
+      this.syncInputsToVerse();
+      const trans = this._verse.translations.find((tr) => tr.id === this._activeTranslationId);
+      if (trans && trans.text) {
+        autoSuggestBindings(this._verse.tokens, this._activeTranslationId, trans.text, trans.lang);
+        this.refreshBoard();
+      }
+    });
+    board.querySelector('#btn-clear-token-align')?.addEventListener('click', () => {
+      const tk = this._verse?.tokens.find((t) => t.id === this._selectedTokenId);
+      if (tk?.alignment?.matched_words) {
+        tk.alignment.matched_words[this._activeTranslationId] = [];
+        this.refreshBoard();
+        this.updateLivePreview();
+      }
+    });
+  }
+
+  /**
+   * Click on a translation word: link it to the selected token, or remove the link if the
+   * word is already linked to it (a multi-word phrase is removed as a whole).
+   * Shift + click links the whole span since the previously clicked word as one phrase.
+   */
+  private onWordChipClick(index: number, extend: boolean) {
+    const v = this._verse;
+    const cs = this._uiLang === 'cs';
+    if (!v) return;
+    const tk = v.tokens.find((t) => t.id === this._selectedTokenId);
+    if (!tk) {
+      this.notify(cs ? 'Nejprve vyberte sanskrtské slovo (dévanágarí nebo IAST).' : 'Select a Sanskrit word first (Devanagari or IAST).', 'info');
+      return;
+    }
+    this.syncInputsToVerse();
+    const trans = this.getActiveTranslation();
+    const { words, tokensByWord } = this.computeAlignmentState(trans.text || '');
+    const word = words.find((w) => w.index === index);
+    if (!word) return;
+    if (!tk.alignment) tk.alignment = { matched_words: {} };
+    const list = tk.alignment.matched_words[trans.id] || [];
+
+    if (extend && this._lastWordIndex !== null && this._lastWordIndex !== index) {
+      const a = words.find((w) => w.index === Math.min(index, this._lastWordIndex!))!;
+      const b = words.find((w) => w.index === Math.max(index, this._lastWordIndex!))!;
+      const phrase = (trans.text || '').slice(a.start, b.end);
+      // the span replaces the single words of it that were linked before
+      const inside = words.filter((w) => w.index >= a.index && w.index <= b.index).map((w) => w.word.toLowerCase());
+      tk.alignment.matched_words[trans.id] = [...list.filter((p) => !inside.includes(p.toLowerCase())), phrase];
+    } else if ((tokensByWord.get(index) || []).includes(tk.id)) {
+      // remove every phrase of this token that covers the word
+      const covering = list.filter((p) => {
+        const r = findAlignedRanges(trans.text || '', [{ phrase: p, tokenId: tk.id }])[0];
+        return r && r.start < word.end && r.end > word.start;
+      });
+      tk.alignment.matched_words[trans.id] = list.filter((p) => !covering.includes(p));
+    } else {
+      tk.alignment.matched_words[trans.id] = [...list, word.word];
+    }
+    this._lastWordIndex = index;
+    this.refreshBoard();
+    this.updateLivePreview();
+  }
+
+  private bindHintEvents() {
+    const hints = this.querySelector('#hints-mount');
+    if (!hints || !this._verse) return;
+    const tk = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
+    const cs = this._uiLang === 'cs';
+
+    // Token property edits
+    const lemmaInput = hints.querySelector('#edit-token-lemma') as HTMLInputElement | null;
+    const grammarInput = hints.querySelector('#edit-token-grammar') as HTMLInputElement | null;
+    const meaningInput = hints.querySelector('#edit-token-meaning') as HTMLInputElement | null;
+    const onTokenPropChange = () => {
+      if (!tk) return;
+      if (lemmaInput) tk.lemma = lemmaInput.value;
+      if (grammarInput) {
+        if (!tk.grammar) tk.grammar = {};
+        tk.grammar.label_cs = grammarInput.value;
+      }
+      if (meaningInput) {
+        const tLang = this.getActiveTranslation().lang;
+        if (!tk.vocabulary) tk.vocabulary = { meanings_by_lang: {} };
+        if (!tk.vocabulary.meanings_by_lang) tk.vocabulary.meanings_by_lang = {};
+        tk.vocabulary.meanings_by_lang[tLang] = {
+          contextual: meaningInput.value,
+          alternatives: tk.vocabulary.meanings_by_lang[tLang]?.alternatives || []
+        };
+        if (tLang === 'cs') tk.vocabulary.contextual_meaning_cs = meaningInput.value;
+        if (tLang === 'en') tk.vocabulary.contextual_meaning_en = meaningInput.value;
+      }
+      this.updateLivePreview();
+    };
+    [lemmaInput, grammarInput, meaningInput].forEach((inp) => inp?.addEventListener('input', onTokenPropChange));
+    // Board tooltips show lemma and meaning – refresh them when editing is finished
+    [lemmaInput, meaningInput].forEach((inp) => inp?.addEventListener('change', () => this.refreshBoard()));
+
+    // Glossary suggestion → insert into the translation
+    hints.querySelectorAll('[data-glossary-apply]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const text = btn.getAttribute('data-glossary-apply');
+        const transText = this.querySelector('#edit-trans-text') as HTMLTextAreaElement | null;
+        if (!text || !transText) return;
+        insertAtCursor(transText, ` ${text}`);
+        this.syncInputsToVerse();
+        this.refreshBoard();
+      });
+    });
+
+    hints.querySelector('#btn-quick-add-glossary-term')?.addEventListener('click', () => {
+      if (!tk) return;
+      const stem = prompt(cs ? 'Sanskrtský kmen (např. yoga, dharma):' : 'Sanskrit stem (e.g. yoga, dharma):', tk.lemma || tk.text.iast);
+      if (!stem) return;
+      const transCs = prompt(cs ? 'Český překlad termínu:' : 'Czech translation:', tk.vocabulary?.meanings_by_lang?.cs?.contextual || '');
+      const transEn = prompt(cs ? 'Anglický překlad termínu:' : 'English translation:', tk.vocabulary?.meanings_by_lang?.en?.contextual || '');
+      this._glossary[stem.toLowerCase()] = {
+        stem,
+        devanagari: tk.text.devanagari,
+        translationCs: transCs || '',
+        translationEn: transEn || ''
+      };
+      this.notify(cs ? `Termín „${stem}“ byl uložen do projektového glosáře.` : `Term “${stem}” saved to the project glossary.`);
+      this.refreshHints();
+    });
+
+    // Monier-Williams entry on demand
+    hints.querySelector('#btn-load-mw')?.addEventListener('click', async () => {
+      if (!tk) return;
+      const key = sanitizeSearchLemma(tk.lemma || tk.text.iast);
+      this._mwState = { key, loading: true, result: null };
+      this.refreshHints();
+      const result = await lookupMonierWilliams(key);
+      if (this._mwState?.key !== key) return;
+      this._mwState = { key, loading: false, result };
+      this.refreshHints();
+    });
+
+    // Compound split suggestions (Vidyut sandhi + Monier-Williams validation)
+    hints.querySelector('#btn-propose-split')?.addEventListener('click', async () => {
+      if (!tk) return;
+      const tokenId = tk.id;
+      this._splitState = { tokenId, loading: true, items: [] };
+      this.refreshHints();
+      try {
+        if (!isVidyutReady()) await loadVidyutWasm();
+        // Offline kosha: all members at once, with grammar of the final member
+        const analysis = await analyzeCompound(tk.text.iast, { max: 6 });
+        if (this._splitState?.tokenId !== tokenId) return;
+        if (analysis) {
+          const cs = this._uiLang === 'cs';
+          const items: SplitSuggestion[] = analysis.splits.map((s) => ({
+            parts: s.members.map((m) => ({
+              form: m.iast,
+              lemma: m.lemma,
+              found: m.role !== 'unknown',
+              note: [m.label, m.alternatives.length ? `${cs ? 'též' : 'also'} ${m.alternatives.join(', ')}` : ''].filter(Boolean).join(' · ')
+            })),
+            badges: [
+              ...(s.source === 'corpus' ? [{ text: `DCS ×${s.count}`, title: cs ? 'Takto rozděleno v Digital Corpus of Sanskrit' : 'Split like this in the Digital Corpus of Sanskrit' }] : []),
+              ...(s.mw ? [{ text: 'MW', title: cs ? 'Hranice členů podle hesla Monier-Williams' : 'Member boundaries as in the Monier-Williams entry' }] : [])
+            ]
+          }));
+          this._splitState = { tokenId, loading: false, items, source: 'offline', whole: analysis.whole };
+        } else {
+          // Without the downloaded dictionary: two-way splits checked online in Monier-Williams
+          const ranked = await rankSplits(tk.text.iast, { max: 6 });
+          if (this._splitState?.tokenId !== tokenId) return;
+          const items: SplitSuggestion[] = ranked.map((r) => ({
+            parts: r.parts.map((p) => ({ form: p.form, lemma: p.lemma, found: p.found, note: p.gloss }))
+          }));
+          this._splitState = { tokenId, loading: false, items, source: 'mw' };
+        }
+      } catch (err: any) {
+        this._splitState = { tokenId, loading: false, items: [], error: err?.message || String(err) };
+      }
+      this.refreshHints();
+    });
+
+    hints.querySelectorAll('[data-apply-split]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const cand = this._splitState?.items[Number(btn.getAttribute('data-apply-split'))];
+        if (!cand || !tk) return;
+        this.applyTokenSplit(tk.id, cand.parts.map((p) => ({ iast: p.form, lemma: p.lemma })));
+      });
+    });
+
+    hints.querySelector('#btn-apply-manual-split')?.addEventListener('click', () => {
+      const input = hints.querySelector('#manual-split-input') as HTMLInputElement | null;
+      const parts = parseManualSplit(input?.value || '');
+      if (!tk) return;
+      if (parts.length < 2) {
+        this.notify(cs ? 'Zadejte alespoň dvě části oddělené „+“.' : 'Enter at least two parts separated by “+”.', 'error');
+        return;
+      }
+      this.applyTokenSplit(tk.id, parts);
+    });
+
+    hints.querySelector('#btn-merge-compound')?.addEventListener('click', () => {
+      if (!tk || !this._verse) return;
+      const before = this._verse.tokens.length;
+      this._verse.tokens = mergeCompound(this._verse.tokens, tk.id);
+      const merged = this._verse.tokens.find((t) => !t.compound?.is_compound_member && t.text.iast === tk.compound?.analysis);
+      if (this._verse.tokens.length < before) {
+        this._selectedTokenId = merged?.id ?? this._verse.tokens[0]?.id ?? null;
+        this._splitState = null;
+        this.refreshBoard();
+        this.refreshHints();
+        this.updateLivePreview();
+      }
+    });
+
+    // Morphological derivation on demand
+    hints.querySelector('#btn-load-morph')?.addEventListener('click', async () => {
+      if (!tk) return;
+      const tokenId = tk.id;
+      this._morphState = { tokenId, loading: true, tree: null };
+      this.refreshHints();
+      let tree: WordDerivationTree | undefined;
+      try {
+        const analysis = await defaultSanskritAdapter.analyzeWord(tk.text.iast, { lang: this._uiLang });
+        tree = analysis.derivationTree;
+      } catch {
+        tree = undefined;
+      }
+      if (this._morphState?.tokenId !== tokenId) return;
+      this._morphState = { tokenId, loading: false, tree };
+      this.refreshHints();
+    });
+  }
+
+  private applyTokenSplit(tokenId: string, parts: SplitPartSpec[]) {
+    if (!this._verse) return;
+    this._verse.tokens = splitToken(this._verse.tokens, tokenId, parts);
+    const first = this._verse.tokens.find((t) => t.compound?.is_compound_member && t.id.startsWith(`${tokenId}_`));
+    this._selectedTokenId = first?.id ?? this._selectedTokenId;
+    this._splitState = null;
+    this._morphState = null;
+    this.refreshBoard();
+    this.refreshHints();
+    this.updateLivePreview();
+    this.notify(this._uiLang === 'cs' ? `Slovo rozděleno: ${parts.map((p) => p.iast).join(' + ')}` : `Word split: ${parts.map((p) => p.iast).join(' + ')}`);
   }
 
   private escape(str?: string): string {
@@ -1454,151 +1923,6 @@ export class SanskritEditorElement extends HTMLElement {
     `;
   }
 
-  private renderActiveTokenDetail(tk?: Token): string {
-    if (!tk) return '';
-
-    const lang = this._uiLang;
-    const gAnalysis = formatGrammarAnalysis(tk.grammar, lang);
-    const lemma = sanitizeSearchLemma(tk.lemma || tk.text.iast);
-
-    // Dictionary URLs using clean lemma
-    const mwUrl = getDictionaryUrl(lemma, 'cologne_mw');
-    const apteUrl = getDictionaryUrl(lemma, 'cologne_apte');
-    const wisdomUrl = getDictionaryUrl(lemma, 'wisdomlib');
-    const ambudaUrl = getDictionaryUrl(lemma, 'ambuda');
-
-    const csContext = tk.vocabulary?.meanings_by_lang?.cs?.contextual ||
-                      tk.vocabulary?.contextual_meaning_cs ||
-                      '';
-
-    return `
-      <div class="active-token-editor-box cat-word-inspector">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem; flex-wrap: wrap; gap: 0.4rem;">
-          <div style="display: flex; align-items: baseline; gap: 0.5rem;">
-            <strong class="deva-font" style="font-size: 1.25rem; color: var(--accent-gold-dark);">
-              ${escapeHtml(tk.text.devanagari)}
-            </strong>
-            <span style="font-style: italic; font-size: 0.95rem; color: var(--text-primary); font-weight: 600;">
-              ${escapeHtml(tk.text.iast)}
-            </span>
-          </div>
-          <span style="font-size: 0.75rem; background: ${gAnalysis.categoryColor}20; color: ${gAnalysis.categoryColor}; border: 1px solid ${gAnalysis.categoryColor}; padding: 2px 8px; border-radius: 12px; font-weight: 700;">
-            ${escapeHtml(gAnalysis.fullLabel)}
-          </span>
-        </div>
-
-        <!-- Rigorous Grammar Details Grid -->
-        ${
-          gAnalysis.details.length > 0
-            ? `
-          <div class="cat-grammar-detail-tags">
-            ${gAnalysis.details
-              .map(
-                (d) => `
-              <div class="cat-grammar-tag">
-                <span class="tag-title">${escapeHtml(d.title)}:</span>
-                <span class="tag-value">${escapeHtml(d.value)}</span>
-              </div>`
-              )
-              .join('')}
-          </div>`
-            : ''
-        }
-
-        <!-- Manual Edit Inputs -->
-        <div class="editor-grid-3" style="margin-top: 0.6rem;">
-          <label>
-            Kmen / Lemma (pro slovník):
-            <input type="text" id="edit-token-lemma" value="${escapeHtml(tk.lemma || '')}" class="form-input">
-          </label>
-          <label>
-            Gramatika (vlastní poznámka):
-            <input type="text" id="edit-token-grammar" value="${escapeHtml(tk.grammar?.label_cs || '')}" class="form-input">
-          </label>
-          <label>
-            Kontextový význam:
-            <input type="text" id="edit-token-meaning" value="${escapeHtml(csContext)}" class="form-input">
-          </label>
-        </div>
-
-        <!-- Lemma-Based Dictionary Lookup Links -->
-        <div class="cat-dictionary-lemma-bar" style="margin-top: 0.75rem; padding-top: 0.5rem; border-top: 1px dashed var(--bg-card-border);">
-          <div style="font-size: 0.78rem; font-weight: 700; color: var(--accent-gold-dark); margin-bottom: 0.35rem;">
-            🔍 ${t('dictLookupTitle', lang)}: <code>${escapeHtml(lemma)}</code>
-          </div>
-          <div class="dict-btn-grid" style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
-            <a href="${escapeHtml(mwUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
-              📖 Monier-Williams
-            </a>
-            <a href="${escapeHtml(apteUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
-              📖 V. S. Apte
-            </a>
-            <a href="${escapeHtml(wisdomUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
-              🌐 WisdomLib
-            </a>
-            <a href="${escapeHtml(ambudaUrl)}" target="_blank" rel="noopener noreferrer" class="btn btn-sm btn-outline">
-              ⚡ Ambuda
-            </a>
-          </div>
-        </div>
-      </div>
-    `;
-  }
-
-  private renderAlignmentWords(translationId: string, translationText: string): string {
-    if (!this._verse || !this._selectedTokenId) {
-      return `<div style="font-size: 0.85rem; color: var(--text-muted);">Nejprve vyberte slovo výše.</div>`;
-    }
-
-    const activeToken = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
-    const words = tokenizeTranslation(translationText);
-
-    if (words.length === 0) {
-      return `<div style="font-size: 0.85rem; color: var(--text-muted);">Překlad neobsahuje žádná slova k přiřazení.</div>`;
-    }
-
-    const matchedWords = activeToken?.alignment?.matched_words?.[translationId] || [];
-
-    return `
-      <div class="alignment-words-container">
-        <div style="font-size: 0.85rem; margin-bottom: 0.4rem;">
-          Slova v překladu (klikněte pro přiřazení k <strong>${escapeHtml(activeToken?.text.devanagari || '')}</strong>):
-        </div>
-        <div class="alignment-pills-flow">
-          ${words
-            .map((w) => {
-              const cleanW = w.toLowerCase();
-              const isBoundToActive = matchedWords.some((mw) => mw.toLowerCase() === cleanW);
-
-              const otherBound = this._verse?.tokens.find(
-                (tk) =>
-                  tk.id !== this._selectedTokenId &&
-                  tk.alignment?.matched_words?.[translationId]?.some((mw) => mw.toLowerCase() === cleanW)
-              );
-
-              let pillClass = 'align-word-pill';
-              let badge = '';
-              if (isBoundToActive) {
-                pillClass += ' bound-active';
-                badge = ' ✓';
-              } else if (otherBound) {
-                pillClass += ' bound-other';
-                badge = ` [${escapeHtml(otherBound.text.devanagari)}]`;
-              }
-
-              return `
-                <button class="${pillClass}" data-align-word="${escapeHtml(w)}">
-                  ${escapeHtml(w)}${badge}
-                </button>
-              `;
-            })
-            .join('')}
-        </div>
-      </div>
-    `;
-  }
-
-  /** Language of the translation currently being edited (falls back to the UI language). */
   private getActiveTranslationLang(): string {
     return this._verse?.translations.find((t) => t.id === this._activeTranslationId)?.lang || this._uiLang;
   }
@@ -1865,15 +2189,26 @@ export class SanskritEditorElement extends HTMLElement {
   }
 
   private updateLivePreview() {
-    if (this._activeTab !== 'edit' || !this._verse) return;
-
     const mount = this.querySelector('#editor-preview-mount');
     if (!mount) return;
-
     mount.innerHTML = '';
+    if (!this._previewOpen || !this._verse) return;
     const verseEl = document.createElement('sanskrit-verse') as SanskritVerseElement;
     verseEl.verse = this._verse;
     mount.appendChild(verseEl);
+  }
+
+  private setPreviewOpen(open: boolean) {
+    this._previewOpen = open;
+    const overlay = this.querySelector('#editor-preview-overlay') as HTMLElement | null;
+    if (overlay) {
+      overlay.hidden = !open;
+      overlay.classList.toggle('is-open', open);
+    }
+    this.querySelector('#btn-toggle-preview')?.classList.toggle('active', open);
+    this.syncInputsToVerse();
+    this.updateLivePreview();
+    if (open) (this.querySelector('#btn-close-preview') as HTMLElement | null)?.focus();
   }
 
   private attachEventListeners() {
@@ -2060,13 +2395,6 @@ export class SanskritEditorElement extends HTMLElement {
     const btnBottomSaveNext = this.querySelector('#btn-bottom-save-next');
     btnBottomSaveNext?.addEventListener('click', () => this.saveCurrentVerseAndAdvance());
 
-    // Grammar Highlights Toggle
-    const toggleGrammar = this.querySelector('#toggle-grammar-highlights') as HTMLInputElement;
-    toggleGrammar?.addEventListener('change', (e) => {
-      this._showGrammarHighlights = (e.target as HTMLInputElement).checked;
-      this.render();
-    });
-
     // Tab switching
     this.querySelectorAll('[data-editor-tab]').forEach((btn) => {
       btn.addEventListener('click', (e) => {
@@ -2168,6 +2496,11 @@ export class SanskritEditorElement extends HTMLElement {
     [devaInput, iastInput, numInput, bookInput, chapInput, meterInput, transText].forEach((inp) => {
       inp?.addEventListener('input', onInputChange);
     });
+    let boardTimer: ReturnType<typeof setTimeout> | null = null;
+    transText?.addEventListener('input', () => {
+      if (boardTimer) clearTimeout(boardTimer);
+      boardTimer = setTimeout(() => this.refreshBoard(), 300);
+    });
 
     // Auto-transliterate IAST from Devanagari
     const btnAutoTranslit = this.querySelector('#btn-auto-transliterate-iast');
@@ -2207,57 +2540,10 @@ export class SanskritEditorElement extends HTMLElement {
       }
     });
 
-    // Split and lemmatize tokens
-    const btnSplit = this.querySelector('#btn-split-and-lemmatize');
-    btnSplit?.addEventListener('click', () => {
-      this.autoSplitAndLemmatize();
-    });
-
-    // Select token
-    this.querySelectorAll('[data-token-select]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        const tokenId = (e.currentTarget as HTMLElement).getAttribute('data-token-select');
-        if (tokenId) {
-          this._selectedTokenId = tokenId;
-          this.render();
-        }
-      });
-    });
-
-    // Active token edits
-    const lemmaInput = this.querySelector('#edit-token-lemma') as HTMLInputElement;
-    const grammarInput = this.querySelector('#edit-token-grammar') as HTMLInputElement;
-    const meaningInput = this.querySelector('#edit-token-meaning') as HTMLInputElement;
-
-    const onTokenPropChange = () => {
-      if (!this._verse || !this._selectedTokenId) return;
-      const tk = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
-      if (tk) {
-        if (lemmaInput) tk.lemma = lemmaInput.value;
-        if (grammarInput) {
-          if (!tk.grammar) tk.grammar = {};
-          tk.grammar.label_cs = grammarInput.value;
-        }
-        if (meaningInput) {
-          if (!tk.vocabulary) tk.vocabulary = { meanings_by_lang: {} };
-          if (!tk.vocabulary.meanings_by_lang) tk.vocabulary.meanings_by_lang = {};
-          tk.vocabulary.meanings_by_lang.cs = {
-            contextual: meaningInput.value,
-            alternatives: tk.vocabulary.meanings_by_lang.cs?.alternatives || []
-          };
-          tk.vocabulary.contextual_meaning_cs = meaningInput.value;
-        }
-        this.updateLivePreview();
-      }
-    };
-
-    [lemmaInput, grammarInput, meaningInput].forEach((inp) => {
-      inp?.addEventListener('input', onTokenPropChange);
-    });
-
     // Switch active translation
     const transSelect = this.querySelector('#edit-trans-select') as HTMLSelectElement;
     transSelect?.addEventListener('change', (e) => {
+      this.syncInputsToVerse();
       this._activeTranslationId = (e.target as HTMLSelectElement).value;
       this.render();
     });
@@ -2280,76 +2566,13 @@ export class SanskritEditorElement extends HTMLElement {
       this.render();
     });
 
-    // Apply glossary suggestion
-    this.querySelectorAll('[data-glossary-apply]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        const text = (e.currentTarget as HTMLElement).getAttribute('data-glossary-apply');
-        if (!text || !this._verse) return;
+    // Preview overlay (on demand)
+    this.querySelector('#btn-toggle-preview')?.addEventListener('click', () => this.setPreviewOpen(!this._previewOpen));
+    this.querySelector('#btn-close-preview')?.addEventListener('click', () => this.setPreviewOpen(false));
+    this.querySelector('[data-close-preview]')?.addEventListener('click', () => this.setPreviewOpen(false));
 
-        if (transText) {
-          insertAtCursor(transText, ` ${text}`);
-          this.syncInputsToVerse();
-        }
-      });
-    });
-
-    // Quick add to Glossary
-    const btnQuickAddGlossary = this.querySelector('#btn-quick-add-glossary-term');
-    btnQuickAddGlossary?.addEventListener('click', () => {
-      if (!this._verse || !this._selectedTokenId) return;
-      const tk = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
-      if (!tk) return;
-
-      const stem = prompt('Sanskrt kmen (např. yoga, dharma):', tk.lemma || tk.text.iast);
-      if (!stem) return;
-      const transCs = prompt('Český překlad termínu:', tk.vocabulary?.meanings_by_lang?.cs?.contextual || '');
-      const transEn = prompt('Anglický překlad termínu (English translation):', tk.vocabulary?.meanings_by_lang?.en?.contextual || '');
-
-      this._glossary[stem.toLowerCase()] = {
-        stem,
-        devanagari: tk.text.devanagari,
-        translationCs: transCs || '',
-        translationEn: transEn || ''
-      };
-      this.notify(`Termín „${stem}“ byl úspěšně uložen do projektového glosáře.`);
-      this.render();
-    });
-
-    // Click-to-bind translation word
-    this.querySelectorAll('[data-align-word]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        const word = (e.currentTarget as HTMLElement).getAttribute('data-align-word');
-        if (!word || !this._verse || !this._selectedTokenId) return;
-
-        const tk = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
-        if (tk) {
-          toggleWordBinding(tk, this._activeTranslationId, word);
-          this.render();
-        }
-      });
-    });
-
-    // Auto-suggest bindings
-    const btnAutoAlign = this.querySelector('#btn-auto-align');
-    btnAutoAlign?.addEventListener('click', () => {
-      if (!this._verse) return;
-      const trans = this._verse.translations.find((t) => t.id === this._activeTranslationId);
-      if (trans && trans.text) {
-        autoSuggestBindings(this._verse.tokens, this._activeTranslationId, trans.text, trans.lang);
-        this.render();
-      }
-    });
-
-    // Clear active token alignment
-    const btnClearAlign = this.querySelector('#btn-clear-token-align');
-    btnClearAlign?.addEventListener('click', () => {
-      if (!this._verse || !this._selectedTokenId) return;
-      const tk = this._verse.tokens.find((t) => t.id === this._selectedTokenId);
-      if (tk?.alignment?.matched_words) {
-        tk.alignment.matched_words[this._activeTranslationId] = [];
-        this.render();
-      }
-    });
+    this.bindBoardEvents();
+    this.bindHintEvents();
 
     // Verse selector in header
     const verseSelect = this.querySelector('#editor-verse-select') as HTMLSelectElement;
