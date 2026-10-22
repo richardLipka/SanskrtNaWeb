@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 
 export default defineConfig({
+  // GitHub Pages serves the app under /<repository>/ (set by .github/workflows/pages.yml)
+  base: process.env.PAGES_BASE || '/',
   server: {
     port: 5173,
     open: false
