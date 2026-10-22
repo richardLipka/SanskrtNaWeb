@@ -1,6 +1,6 @@
 # Sanskrt Na Web (Sanskrit Web Platform)
 
-[![Build & Test](https://img.shields.io/badge/tests-168%20passed-brightgreen.svg)](https://github.com/richardLipka/SanskrtNaWeb)
+[![Build & Test](https://img.shields.io/badge/tests-184%20passed-brightgreen.svg)](https://github.com/richardLipka/SanskrtNaWeb)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.7-blue.svg)](https://www.typescriptlang.org/)
 [![Vite](https://img.shields.io/badge/Vite-6.2-purple.svg)](https://vitejs.dev/)
 [![WebAssembly](https://img.shields.io/badge/WebAssembly-Ambuda%20Vidyut-orange.svg)](https://github.com/ambuda-org/vidyut)
@@ -24,7 +24,7 @@ Platforma je rozdělena do 3 samostatně využitelných celků:
 │   • Metrum & slabiky (Chandas) │   • Pāṇiniovská klávesnice & IME      │
 │   • Křížové zvýrazňování       │   • Interaktivní párování slov        │
 │   • Víceautorské výklady       │   • Správa knih, kapitol a glosářů    │
-│   • Pāṇiniovský derivační strom│   • LLM překladatel & kritika (OpenAI)│
+│   • Morfologická stavba (Pāṇini)│   • LLM překladatel & kritika (OpenAI)│
 ├────────────────────────────────┴───────────────────────────────────────┤
 │                    📦 SAMOTNÁ KNIHOVNA (Core Library)                  │
 │                     import { ... } from 'sanskrt-na-web'               │
@@ -117,7 +117,7 @@ Plně responzivní čtečka dostupná buď jako webová aplikace na `tab-interac
    - **4. Metrum & rytmus (*Chandas*)**: Automatické určení metra (např. *Anuṣṭubh / Śloka*, *Triṣṭubh*, *Indravajrā*) a vizualizace váhy slabik (*laghu* $\cup$ a *guru* —) přímo pod veršem.
    - **5. Komentáře & Tradiční výklady (*Bhāṣya & Ṭīkā*)**: Současné zobrazení více komentářů vedle sebe (např. *Śaṅkarācārya*, *Rāmānujācārya*, *Madhva* a poznámky českých překladatelů).
 2. **Obousměrné křížové zvýrazňování (Cross-Highlighting)**: Najetí myší na sanskrtské slovo zvýrazní odpovídající slovo v dévanágarí, IAST i v českém překladu.
-3. **Morfologický popup a Pāṇiniovský derivační strom**: Kliknutí na slovo otevře kartu s mluvnickým rozborem, kořenem (*dhātu*), kmenem (*prātipadika*), odkazy do slovníků a přesnými súframi z Pāṇiniho *Aṣṭādhyāyī* (pomocí `vidyut-prakriya`).
+3. **Morfologický popup a morfologická stavba slova**: Kliknutí na slovo otevře kartu s mluvnickým rozborem, odkazy do slovníků a – pokud ho `vidyut-prakriya` dokáže z rozpoznaného kmene či kořene skutečně odvodit – rozkladem na předpony, kořen (*dhātu*) nebo kmen (*prātipadika*), kmenotvornou příponu (*vikaraṇa*) a koncovku (např. √bhū + śap + laṭ→tip = bhav-a-ti). Postup podle jednotlivých súter *Aṣṭādhyāyī* je k dispozici na vyžádání s odkazy na [ashtadhyayi.com](https://ashtadhyayi.com/sutraani/1/1/1).
 
 ---
 
@@ -126,14 +126,16 @@ Plně responzivní čtečka dostupná buď jako webová aplikace na `tab-interac
 Profesionální prostředí pro překladatele a indology inspirované moderními CAT nástroji (memoQ, Trados), přístupné v záložce `tab-editor` nebo přes `<sanskrit-editor>`:
 
 ### Funkce pro překladatele:
-1. **Dvojitý náhled (Split-View)**: Živý náhled formátovaného verše v pravém sloupci se okamžitě aktualizuje při psaní.
+1. **Pracovní plocha na celou šířku obrazovky**: tři sloupce – zdrojový text (dévanágarí, IAST, metrum, kontext), překlad s tabulí vazeb a nápověda ke zvolenému slovu (rozbor, slovník, glosář, rozdělení složeniny, morfologie). Náhled verše v čtečce se otevírá na vyžádání v překryvném panelu (tlačítko „Náhled“, zavření klávesou Esc).
 2. **Virtuální klávesnice s diakritikou**:
    - **IAST lišta**: Rychlé vkládání znaků s makrony a tečkami na pozici kurzoru (`ā`, `ī`, `ū`, `ṛ`, `ṝ`, `ḷ`, `ṭ`, `ḍ`, `ṇ`, `ś`, `ṣ`, `ṅ`, `ñ`, `ṃ`, `ḥ`).
    - **Živý přepis (IME)**: Psaní v IAST s průběžnou konverzí celého rozepsaného slova do dévanágarí (`yoga` → योग, Backspace maže poslední latinské písmeno, `|` → ।, `||` → ॥).
    - **Pāṇiniovská vizuální klávesnice**: Uspořádaná podle tradičních artikulačních tříd (*kaṇṭhya*, *tālavya*, *mūrdhanya*, *dantya*, *oṣṭhya*).
-3. **Nástroj pro párování slov (Word Alignment)**:
-   - Kliknutím na sanskrtský token a následně na odpovídající české/anglické slovo v překladu vytvoříte vazbu pro cross-highlighting.
+3. **Tabule vazeb slov (Word Alignment)**:
+   - Tři řádky – dévanágarí, IAST a slova překladu; nad slovem v dévanágarí se zobrazí transliterace, lemma, gramatika a význam.
+   - Kliknutím na sanskrtské slovo a poté na slovo překladu vznikne vazba, opětovným kliknutím se zruší; Shift + klik přiřadí celý úsek. Vazby jsou barevně odlišené a jejich seznam umožňuje jednotlivé vazby odebrat.
    - Tlačítko pro automatický návrh vazeb na základě slovníkové shody.
+   - **Složeniny a sandhi**: návrh rozdělení slova na všechny členy (kṛṣṇārjunasaṃvādaḥ → kṛṣṇa + arjuna + saṃvāda), ruční rozdělení („dharma + kṣetre“) i zpětné spojení; každý člen má vlastní slovníková hesla a vazby. Slova se spojovníkem (dharma-kṣetre) se při dělení verše na slova rozdělí automaticky. Vše běží v prohlížeči bez serveru a bez online služeb: WebAssembly balík Vidyut obsahuje jen rozdělovač sandhi (segmentátor *vidyut-cheda* ani lexikon *vidyut-kosha* v něm nejsou), proto má aplikace vlastní segmentátor ([`compoundService.ts`](src/core/lemmatizer/compoundService.ts), [`compoundSegmenter.ts`](src/core/lemmatizer/compoundSegmenter.ts)). Nejdřív nabídne rozdělení doložená v *Digital Corpus of Sanskrit*, jinak Vidyut navrhne místa řezu s obráceným sandhi a členy se ověří a seřadí podle statického lexikonu dodávaného s aplikací ([`public/lexicon/`](public/lexicon/), 3,2 MB: hesla Monier-Williams, četnosti a pravidla koncovek z DCS). Stažený offline slovník Vidyut (`data-0.4.0.zip`, [`kosha/`](src/core/lemmatizer/kosha/)) je volitelný a zpřesní tvary. Na 9 857 složeninách z DCS je první návrh správný v ~78 % (validační vzorek) (viz *Lexikon pro dělení složenin* níže).
 4. **Správa a editace víceautorských komentářů**:
    - Rychlé předvolby komentátorů (*Śaṅkara*, *Rāmānuja*, *Śrīdhara*, *Madhva*, *Filipský & Vacek*).
    - In-place editace textu výkladu, tradice i citace pramene.
@@ -161,6 +163,7 @@ Projekt staví na renomovaných mezinárodních a českých indologických zdroj
 | **Winthrop Sargeant** | SUNY Press (2009) | Meziřádkový gramatický layout a slovníkové glosy Bhagavadgíty. | *The Bhagavad Gītā*, Revised Edition |
 | **Filipský & Vacek** | Jan Filipský, Jaroslav Vacek (Odeon, 1976) | Klasický český přebásněný i filologický překlad Bhagavadgíty, terminologie *niṣkāmakarmy*. | Odeon 1976 / Česká indologie |
 | **GRETIL** | Göttingen Register of Electronic Texts | Elektronické edice sanskrtských kánonických textů (Yogasūtra, Mahābhārata, Upaniṣady). | [GRETIL Archive](http://gretil.sub.uni-goettingen.de/) |
+| **Digital Corpus of Sanskrit (DCS)** | Oliver Hellwig | Lemmatizovaný korpus s rozdělenými složeninami: četnosti členů, pravidla koncovek a doložená rozdělení v `public/lexicon/`. | [CC BY 4.0](https://github.com/OliverHellwig/sanskrit) |
 | **Wikisource Sanskrit** | Wikimedia Commons | Tradiční sanskrtské komentáře (*Śāṅkarabhāṣya*, *Rāmānujabhāṣya*, *Subodhinī*). | [sa.wikisource.org](https://sa.wikisource.org/) |
 
 ---
@@ -180,7 +183,7 @@ npm install
 # Spuštění vývojového serveru (HMR na http://localhost:5173/)
 npm run dev
 
-# Spuštění kompletní testovací sady (15 sad, 168 testů)
+# Spuštění kompletní testovací sady (16 sad, 184 testů)
 npm test
 
 # Spuštění testů ve sledovacím režimu
@@ -225,8 +228,26 @@ Samostatný WordPress plugin pro vkládání připravených bloků sanskrtských
 
 ---
 
+### Lexikon pro dělení složenin
+
+Soubory v [`public/lexicon/`](public/lexicon/) se generují nástrojem [`tools/lexicon/build-lexicon.ts`](tools/lexicon/build-lexicon.ts) ze zdrojového textu Monier-Williams ([csl-orig](https://github.com/sanskrit-lexicon/csl-orig), `v02/mw/mw.txt`) a ze souborů CoNLL-U korpusu DCS ([OliverHellwig/sanskrit](https://github.com/OliverHellwig/sanskrit), `dcs/data/conllu`). Zdroje stahuje jen vývojář, aplikace je za běhu nepotřebuje:
+
+```bash
+npm run lexicon:build -- --mw <csl-orig>/v02/mw/mw.txt --dcs-git <klon OliverHellwig/sanskrit> --gold <složka pro testovací sadu>
+npm run lexicon:eval -- --gold <složka>/gold-compounds.tsv [--kosha data-0.4.0.zip]
+```
+
+Repozitář DCS má názvy souborů, které Windows nedokáže vytvořit, proto `--dcs-git` čte soubory přímo z gitu (stačí `git clone --filter=blob:none --sparse` a `git backfill --sparse`). Hodnocení porovnává první návrh s rozdělením v DCS (bez vyhledání v doložených rozděleních; validační vzorek 1 408 složenin, odlišný od vzorku pro ladění vah):
+
+| Nastavení | Správně 1. návrh | Správně mezi 3 |
+| :--- | :--- | :--- |
+| jen Vidyut kosha (předchozí verze) | 58,3 % | 74,6 % |
+| statický lexikon (výchozí, bez stahování) | 78,2 % | 85,5 % |
+| statický lexikon + Vidyut kosha | 79,2 % | 87,9 % |
+
 ## 📄 Licence
 
 Tento projekt je licencován pod licencí [MIT](LICENSE).
 Použité moduly a data projektu [Ambuda Vidyut](https://github.com/ambuda-org/vidyut) podléhají licencím Apache 2.0 a MIT.
 Slovníková data z Kolínské univerzity podléhají podmínkám projektu [Cologne Sanskrit Dictionaries](https://www.sanskrit-lexicon.uni-koeln.de/).
+Datové soubory lexikonu v `public/lexicon/` jsou odvozeny z Monier-Williams (csl-orig, CC BY-SA 4.0) a z Digital Corpus of Sanskrit (O. Hellwig, CC BY 4.0) a šíří se pod CC BY-SA 4.0 (viz [`public/lexicon/SOURCES.md`](public/lexicon/SOURCES.md)).
