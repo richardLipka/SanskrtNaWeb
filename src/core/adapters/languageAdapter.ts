@@ -41,6 +41,17 @@ export interface WordDerivationStep {
   termsText: string;
 }
 
+export interface WordMorpheme {
+  /** prefix | root | stem | vikarana | ending | suffix */
+  role: string;
+  label: string;
+  /** Original (upadeśa) form */
+  upadesha: string;
+  /** All forms the morpheme passed through, upadeśa first, surface last */
+  forms: string[];
+  surface: string;
+}
+
 export interface WordDerivationTree {
   targetText: string;
   targetTranslit: string;
@@ -48,6 +59,10 @@ export interface WordDerivationTree {
   category: string;
   linguisticNotes: Record<string, string>;
   steps: WordDerivationStep[];
+  /** Root/stem, prefixes and suffixes of the derivation */
+  morphemes?: WordMorpheme[];
+  /** True when the derivation reproduces the analyzed word; otherwise it is only a guess */
+  verified?: boolean;
 }
 
 export interface UniversalWordAnalysis {

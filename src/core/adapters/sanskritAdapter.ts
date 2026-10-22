@@ -17,7 +17,8 @@ import {
   analyzeSanskritWordFull,
   derivePrakriyaTree,
   detectVerseMeter,
-  splitSandhiWasm
+  splitSandhiWasm,
+  derivationMatchesWord
 } from '../lemmatizer/vidyutAdapter.ts';
 import { devanagariToIast, iastToCzechPhonetic, normalizeSchemeId } from '../transliteration/engine.ts';
 import { CzechPhoneticRules } from '../types/schema.ts';
@@ -83,6 +84,8 @@ export class SanskritLanguageAdapter implements LanguageAdapter {
         stemOrRoot: fullAnalysis.prakriyaTree.stemOrRoot,
         category: fullAnalysis.prakriyaTree.category,
         linguisticNotes: fullAnalysis.prakriyaTree.linguisticNotes as Record<string, string>,
+        morphemes: fullAnalysis.prakriyaTree.morphemes,
+        verified: fullAnalysis.prakriyaTree.verified ?? false,
         steps: fullAnalysis.prakriyaTree.steps.map((s) => ({
           stepNumber: s.stepNumber,
           ruleCode: s.ruleCode,
@@ -113,6 +116,8 @@ export class SanskritLanguageAdapter implements LanguageAdapter {
           stemOrRoot: derived.stemOrRoot,
           category: derived.category,
           linguisticNotes: derived.linguisticNotes as Record<string, string>,
+          morphemes: derived.morphemes,
+          verified: derivationMatchesWord(derived.targetIast, trimmed),
           steps: derived.steps.map((s) => ({
             stepNumber: s.stepNumber,
             ruleCode: s.ruleCode,

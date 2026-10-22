@@ -73,7 +73,32 @@ export interface PrakriyaStepInfo {
   termsIast: string;
 }
 
+export type MorphemeRole = 'prefix' | 'root' | 'stem' | 'vikarana' | 'ending' | 'suffix';
+
+/**
+ * One morpheme of a Pāṇinian derivation: its original teaching form (upadeśa),
+ * the intermediate forms it passed through and its final surface form.
+ */
+export interface DerivationMorpheme {
+  role: MorphemeRole;
+  /** Localized role description, e.g. "kořen (dhātu)" */
+  label: string;
+  /** Upadeśa form in IAST without it-marker notation, e.g. "śap", "laṭ", "bhū" */
+  upadesha: string;
+  /** All distinct forms in order, e.g. ["laṭ", "l", "tip", "ti"] */
+  forms: string[];
+  /** Final surface form in IAST, e.g. "a", "ti" */
+  surface: string;
+  surfaceDeva: string;
+  /** Code of the rule that introduced the morpheme */
+  introducedBy: string;
+}
+
 export interface PrakriyaDerivationResult {
+  /** Morphological structure (prefixes, root/stem, suffixes, ending) extracted from the derivation */
+  morphemes?: DerivationMorpheme[];
+  /** True when the derivation reproduces the analyzed word (set by analyzeSanskritWordFull) */
+  verified?: boolean;
   targetText: string;
   targetDeva: string;
   targetIast: string;
@@ -279,6 +304,28 @@ export function segmentAksharas(input: string, lang: SupportedLanguage = 'cs'): 
       chandas.free();
     }
   } catch {
+    return [];
+  }
+}
+
+let sharedSandhi: any = null;
+
+/**
+ * All two-way cuts of an SLP1 string with the sandhi reversed (raw Vidyut output, valid
+ * splits only). Used by the compound segmenter, which calls it many times per word, so
+ * one splitter instance is reused.
+ */
+export function splitSandhiSlp1(slp1: string): Array<{ first: string; second: string }> {
+  if (!vidyutModule) return [];
+  try {
+    if (!sharedSandhi) sharedSandhi = new vidyutModule.Sandhi();
+    const out: Array<{ first: string; second: string }> = [];
+    for (const split of sharedSandhi.splitAll(slp1)) {
+      if (split.isValid && split.first && split.second) out.push({ first: split.first, second: split.second });
+    }
+    return out;
+  } catch (e) {
+    console.warn('[Vidyut WASM] Sandhi split error:', e);
     return [];
   }
 }
@@ -565,8 +612,12 @@ export function derivePrakriyaTree(
     vacana?: string;
     root?: string;
     gana?: string | number;
+    /** Dhātupāṭha form in SLP1 (e.g. "ga\mx~"); without it the bare root is used */
+    upadesha?: string;
     person?: string;
     voice?: string;
+    /** Prefer the derived form equal to this word when several are produced (ātmanepada/parasmaipada) */
+    matchWord?: string;
     lang?: SupportedLanguage;
   }
 ): PrakriyaDerivationResult | null {
@@ -588,7 +639,8 @@ export function derivePrakriyaTree(
       // Verbal derivation when a verb or root is given
       if (options?.pos === 'verb' || options?.root) {
         const dhatu = cleanDhatu(options?.root || cleanInput);
-        const rootSlp1 = transliterate(dhatu, DEVANAGARI_LETTER.test(dhatu) ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
+        const rootSlp1 = options?.upadesha
+          || transliterate(dhatu, DEVANAGARI_LETTER.test(dhatu) ? Scheme.Devanagari : Scheme.Iast, Scheme.Slp1);
         const ganaKey = String(options?.gana ?? '').trim();
         const gana = GANA_BY_CLASS[ganaKey] || (GANA_NAMES.has(ganaKey) ? ganaKey : 'Bhvadi');
         const classNumber = Object.entries(GANA_BY_CLASS).find(([, g]) => g === gana)?.[0] || '';
@@ -613,14 +665,17 @@ export function derivePrakriyaTree(
         }
 
         if (tinantas && tinantas.length > 0) {
-          return formatPrakriyaOutput(tinantas[0], dhatu, 'tinanta', {
+          const wanted = options?.matchWord
+            ? tinantas.find((t: any) => derivationMatchesWord(transliterate(t.text, Scheme.Slp1, Scheme.Iast), options.matchWord!))
+            : null;
+          return formatPrakriyaOutput(wanted || tinantas[0], dhatu, 'tinanta', {
             type: labels.tinanta,
             pratipadikaOrDhatu: `${labels.root} √${dhatu}`,
             padaOrGana: labels.gana(gana, classNumber),
             caseOrLakara: labels.lat,
             numberOrVacana: `${vacana} (${labels.vacana[vacana]}), ${purusha} (${labels.purusha[purusha]})`,
             genderOrPrayoga: labels.prayoga(pada)
-          });
+          }, rootSlp1, options?.lang === 'en' ? 'en' : 'cs');
         }
       }
 
@@ -648,7 +703,7 @@ export function derivePrakriyaTree(
           caseOrLakara: `${vibhakti} – ${labels.vibhakti[vibhakti]}`,
           numberOrVacana: `${vacana} – ${labels.vacana[vacana]}`,
           genderOrPrayoga: `${linga} – ${labels.linga[linga]}`
-        });
+        }, null, options?.lang === 'en' ? 'en' : 'cs');
       }
 
       return null;
@@ -660,11 +715,156 @@ export function derivePrakriyaTree(
   }
 }
 
+const RULE_SOURCE_LABELS: Record<string, string> = {
+  ashtadhyayi: 'Aṣṭādhyāyī',
+  dhatupatha: 'Dhātupāṭha',
+  kashika: 'Kāśikā',
+  kaumudi: 'Siddhāntakaumudī',
+  varttika: 'Vārttika',
+  unadipatha: 'Uṇādipāṭha',
+  linganushasanam: 'Liṅgānuśāsana',
+  phit: 'Phiṭsūtra'
+};
+
+/**
+ * Link to a rule on ashtadhyayi.com. Only Aṣṭādhyāyī sūtras ("a.b.c") have a stable
+ * public URL (https://ashtadhyayi.com/sutraani/a/b/c); other rule sources get no link.
+ */
+export function ruleUrl(source: string | undefined, code: string): string {
+  const m = /^(\d{1,2})\.(\d)\.(\d{1,3})$/.exec(code || '');
+  if (!m || (source && source !== 'ashtadhyayi')) return '';
+  return `https://ashtadhyayi.com/sutraani/${Number(m[1])}/${Number(m[2])}/${Number(m[3])}`;
+}
+
+const TIN_ENDINGS = new Set(['tip', 'tas', 'Ji', 'sip', 'Tas', 'Ta', 'mip', 'vas', 'mas', 'ta', 'AtAm', 'Ja', 'TAs', 'ATAm', 'Dvam', 'iw', 'vahi', 'mahiN']);
+const LAKARAS = new Set(['la~w', 'li~w', 'lu~w', 'lf~w', 'le~w', 'lo~w', 'la~N', 'li~N', 'lu~N', 'lf~N']);
+const SUP_ENDINGS = new Set(['su~', 'O', 'jas', 'am', 'Ow', 'Sas', 'wA', 'ByAm', 'Bis', 'Ne', 'Byas', 'Nasi~', 'Nas', 'os', 'Am', 'Ni', 'sup']);
+const VIKARANAS = new Set(['Sap', 'Syan', 'Snu', 'Sa', 'Snam', 'u', 'SnA', 'yak', 'cli~', 'sic', 'sya', 'tAsi~']);
+
+const MORPHEME_LABELS: Record<'cs' | 'en', Record<string, string>> = {
+  cs: {
+    prefix: 'předpona (upasarga)',
+    root: 'kořen (dhātu)',
+    stem: 'kmen (prātipadika)',
+    vikarana: 'kmenotvorná přípona (vikaraṇa)',
+    tin: 'osobní koncovka (tiṅ)',
+    sup: 'pádová koncovka (sup)',
+    suffix: 'přípona / augment (pratyaya / āgama)'
+  },
+  en: {
+    prefix: 'prefix (upasarga)',
+    root: 'root (dhātu)',
+    stem: 'stem (prātipadika)',
+    vikarana: 'stem suffix (vikaraṇa)',
+    tin: 'personal ending (tiṅ)',
+    sup: 'case ending (sup)',
+    suffix: 'suffix / augment (pratyaya / āgama)'
+  }
+};
+
+/** SLP1 upadeśa → readable IAST (drops it-marker notation such as "~" and accents). */
+function upadeshaToIast(slp1: string): string {
+  const clean = slp1.replace(/[~^\\/]/g, '');
+  return clean ? vidyutModule.transliterate(clean, vidyutModule.Scheme.Slp1, vidyutModule.Scheme.Iast) : '';
+}
+
+/**
+ * Follows every term (morpheme) through the derivation history and classifies it.
+ * Terms keep their position unless a step inserts or removes one, which is detected by
+ * aligning consecutive steps (unchanged terms keep their text, new ones are flagged).
+ */
+export function extractMorphemes(
+  history: Array<{ rule?: { code?: string }; result?: Array<{ text: string; wasChanged?: boolean }> }>,
+  category: 'subanta' | 'tinanta',
+  rootSlp1: string | null,
+  lang: SupportedLanguage = 'cs'
+): DerivationMorpheme[] {
+  type Rec = { forms: string[]; introducedBy: string };
+  let records: Rec[] = [];
+  let prev: Array<{ text: string; wasChanged?: boolean }> = [];
+
+  for (const step of history || []) {
+    const cur = step.result || [];
+    const code = step.rule?.code || '';
+    if (records.length === 0) {
+      records = cur.map((t) => ({ forms: [t.text], introducedBy: code }));
+    } else if (cur.length === prev.length) {
+      // same structure – positions are stable
+    } else {
+      const next: Rec[] = [];
+      let i = 0;
+      let j = 0;
+      while (i < cur.length || j < prev.length) {
+        const extraCur = (cur.length - i) - (prev.length - j);
+        if (i < cur.length && j < prev.length && cur[i].text === prev[j].text) {
+          next.push(records[j]);
+          i++; j++;
+        } else if (i < cur.length && extraCur > 0 && (cur[i].wasChanged || j >= prev.length)) {
+          next.push({ forms: [cur[i].text], introducedBy: code }); // inserted term
+          i++;
+        } else if (j < prev.length && extraCur < 0) {
+          j++; // removed term
+        } else {
+          if (i < cur.length && j < prev.length) next.push(records[j]);
+          i++; j++;
+        }
+      }
+      records = next.slice(0, cur.length);
+    }
+    cur.forEach((t, idx) => {
+      const rec = records[idx];
+      if (rec && rec.forms[rec.forms.length - 1] !== t.text) rec.forms.push(t.text);
+    });
+    prev = cur;
+  }
+
+  const labels = MORPHEME_LABELS[lang === 'en' ? 'en' : 'cs'];
+  const rootIndex = category === 'tinanta'
+    ? Math.max(0, records.findIndex((r) => rootSlp1 !== null && r.forms[0] === rootSlp1))
+    : 0;
+
+  const out: DerivationMorpheme[] = [];
+  records.forEach((rec, idx) => {
+    const surfaceSlp1 = rec.forms[rec.forms.length - 1] || '';
+    const formsIast = rec.forms.map(upadeshaToIast).filter((f, k, arr) => f && arr.indexOf(f) === k);
+    let role: MorphemeRole;
+    let label: string;
+    if (idx < rootIndex) {
+      role = 'prefix'; label = labels.prefix;
+    } else if (idx === rootIndex) {
+      role = category === 'tinanta' ? 'root' : 'stem';
+      label = category === 'tinanta' ? labels.root : labels.stem;
+    } else if (rec.forms.some((f) => TIN_ENDINGS.has(f) || LAKARAS.has(f))) {
+      role = 'ending'; label = labels.tin;
+    } else if (rec.forms.some((f) => SUP_ENDINGS.has(f))) {
+      role = 'ending'; label = labels.sup;
+    } else if (rec.forms.some((f) => VIKARANAS.has(f))) {
+      role = 'vikarana'; label = labels.vikarana;
+    } else {
+      role = 'suffix'; label = labels.suffix;
+    }
+    // Morphemes that vanished completely (e.g. an unused augment) are not shown
+    if (!surfaceSlp1 && role !== 'ending') return;
+    out.push({
+      role,
+      label,
+      upadesha: formsIast[0] || '',
+      forms: formsIast,
+      surface: surfaceSlp1 ? upadeshaToIast(surfaceSlp1) : '∅',
+      surfaceDeva: surfaceSlp1 ? vidyutModule.transliterate(surfaceSlp1.replace(/[~^\\/]/g, ''), vidyutModule.Scheme.Slp1, vidyutModule.Scheme.Devanagari) : '∅',
+      introducedBy: rec.introducedBy
+    });
+  });
+  return out;
+}
+
 function formatPrakriyaOutput(
   prakriya: any,
   stemOrRoot: string,
   category: 'subanta' | 'tinanta',
-  notes: PrakriyaDerivationResult['linguisticNotes']
+  notes: PrakriyaDerivationResult['linguisticNotes'],
+  rootSlp1: string | null = null,
+  lang: SupportedLanguage = 'cs'
 ): PrakriyaDerivationResult {
   const { Scheme, transliterate } = vidyutModule;
   const targetText = prakriya.text;
@@ -673,20 +873,23 @@ function formatPrakriyaOutput(
 
   const steps: PrakriyaStepInfo[] = (prakriya.history || []).map((step: any, idx: number) => {
     const termsJoined = (step.result || []).map((r: any) => r.text).join(' + ');
-    const code = step.rule?.code || 'sūtra';
+    const code = step.rule?.code || '';
+    const source = step.rule?.source || 'ashtadhyayi';
+    const url = ruleUrl(source, code);
     return {
       stepNumber: idx + 1,
       ruleCode: code,
-      ruleSource: step.rule?.source || 'Aṣṭādhyāyī',
-      sutraUrl: `https://ashtadhyayi.com/sutra/${encodeURIComponent(code)}`,
-      url: `https://ashtadhyayi.com/sutra/${encodeURIComponent(code)}`,
+      ruleSource: RULE_SOURCE_LABELS[source] || source,
+      sutraUrl: url,
+      url,
       termsText: termsJoined,
-      termsDeva: transliterate(termsJoined, Scheme.Slp1, Scheme.Devanagari),
-      termsIast: transliterate(termsJoined, Scheme.Slp1, Scheme.Iast)
+      termsDeva: transliterate(termsJoined.replace(/[~^\\/]/g, ''), Scheme.Slp1, Scheme.Devanagari),
+      termsIast: transliterate(termsJoined.replace(/[~^\\/]/g, ''), Scheme.Slp1, Scheme.Iast)
     };
   });
 
   return {
+    morphemes: extractMorphemes(prakriya.history || [], category, rootSlp1, lang),
     targetText,
     targetDeva,
     targetIast,
@@ -697,6 +900,15 @@ function formatPrakriyaOutput(
     steps,
     prakriyaSteps: steps
   };
+}
+
+/**
+ * True when a derived form is the analyzed word (ignoring case and the m/ṃ spelling of
+ * final anusvāra). Only then does the derivation describe this word and not a guess.
+ */
+export function derivationMatchesWord(derivedIast: string, word: string): boolean {
+  const norm = (w: string) => w.normalize('NFC').toLowerCase().trim().replace(/[ṃṁ]$/, 'm');
+  return Boolean(derivedIast) && norm(derivedIast) === norm(word);
 }
 
 /**
@@ -754,12 +966,15 @@ export async function analyzeSanskritWordFull(query: string, lang: SupportedLang
         number: first?.number,
         root: first?.dhatu || first?.root,
         gana: first?.gana,
+        upadesha: first?.upadesha,
         person: first?.person,
         voice: first?.voice,
+        matchWord: word,
         lang
       });
 
       if (derivation) {
+        derivation.verified = derivationMatchesWord(derivation.targetIast, word);
         prakriyaTree = derivation;
       }
     }

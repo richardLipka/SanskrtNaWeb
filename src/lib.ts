@@ -19,6 +19,11 @@ export * from './core/adapters/sanskritAdapter.ts';
 export * from './core/lemmatizer/sanskritLemmatizer.ts';
 export * from './core/lemmatizer/vidyutAdapter.ts';
 export * from './core/lemmatizer/vidyutKoshaDownloader.ts';
+export * from './core/lemmatizer/kosha/kosha.ts';
+export * from './core/lemmatizer/kosha/koshaService.ts';
+export * from './core/lemmatizer/compoundSegmenter.ts';
+export * from './core/lemmatizer/staticLexicon.ts';
+export * from './core/lemmatizer/compoundService.ts';
 export * from './core/dictionaries/dictionaryBuilder.ts';
 
 // Transliteration & Phonetics

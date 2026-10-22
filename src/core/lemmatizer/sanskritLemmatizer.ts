@@ -13,6 +13,10 @@ export interface MorphAnalysis {
   dhatu?: string;
   /** Verbal class (gaṇa) number 1–10 */
   gana?: number;
+  /** Dhātupāṭha (upadeśa) form in SLP1 as required by vidyut-prakriya, e.g. "ga\mx~" */
+  upadesha?: string;
+  /** Dhātupāṭha number, e.g. "01.1137" */
+  dhatuCode?: string;
   person?: '1st' | '2nd' | '3rd';
   tense?: string;
   voice?: 'active' | 'middle' | 'passive';
@@ -72,23 +76,27 @@ const THEMATIC_FORMS: Record<string, VerbForm> = {
   āmaḥ: { person: '1st', number: 'plural', voice: 'active' }
 };
 
-// Common present stems with their dhātu and gaṇa; `forms` overrides the thematic endings
-const VERB_STEMS: Record<string, { dhatu: string; gana: number; forms?: Record<string, VerbForm> }> = {
-  'bhav': { dhatu: 'bhū', gana: 1 },
-  'gacch': { dhatu: 'gam', gana: 1 },
-  'paśy': { dhatu: 'dṛś', gana: 1 },
-  'tiṣṭh': { dhatu: 'sthā', gana: 1 },
-  'vad': { dhatu: 'vad', gana: 1 },
-  'pat': { dhatu: 'pat', gana: 1 },
-  'dhāv': { dhatu: 'dhāv', gana: 1 },
-  'smar': { dhatu: 'smṛ', gana: 1 },
-  'nay': { dhatu: 'nī', gana: 1 },
-  'jay': { dhatu: 'ji', gana: 1 },
-  'vas': { dhatu: 'vas', gana: 1 },
-  'dhar': { dhatu: 'dhṛ', gana: 1 },
+// Common present stems with their dhātu, gaṇa and Dhātupāṭha entry (upadeśa form in SLP1
+// with accent/it markers, from the MIT-licensed dhatupatha.tsv of vidyut / ashtadhyayi.com);
+// `forms` overrides the thematic endings.
+const VERB_STEMS: Record<string, { dhatu: string; gana: number; upadesha: string; code: string; forms?: Record<string, VerbForm> }> = {
+  'bhav': { dhatu: 'bhū', gana: 1, upadesha: 'BU', code: '01.0001' },
+  'gacch': { dhatu: 'gam', gana: 1, upadesha: 'ga\\mx~', code: '01.1137' },
+  'paśy': { dhatu: 'dṛś', gana: 1, upadesha: 'df\\Si~r', code: '01.1143' },
+  'tiṣṭh': { dhatu: 'sthā', gana: 1, upadesha: 'zWA\\', code: '01.1077' },
+  'vad': { dhatu: 'vad', gana: 1, upadesha: 'vada~', code: '01.1164' },
+  'pat': { dhatu: 'pat', gana: 1, upadesha: 'patx~', code: '01.0979' },
+  'dhāv': { dhatu: 'dhāv', gana: 1, upadesha: 'DAvu~^', code: '01.0685' },
+  'smar': { dhatu: 'smṛ', gana: 1, upadesha: 'smf\\', code: '01.0919' },
+  'nay': { dhatu: 'nī', gana: 1, upadesha: 'RI\\Y', code: '01.1049' },
+  'jay': { dhatu: 'ji', gana: 1, upadesha: 'ji\\', code: '01.0642' },
+  'vas': { dhatu: 'vas', gana: 1, upadesha: 'va\\sa~', code: '01.1160' },
+  'dhar': { dhatu: 'dhṛ', gana: 1, upadesha: 'Df\\Y', code: '01.1047' },
   'kar': {
     dhatu: 'kṛ',
     gana: 8,
+    upadesha: 'qukf\\Y',
+    code: '08.0010',
     forms: {
       oti: { person: '3rd', number: 'singular', voice: 'active' },
       oṣi: { person: '2nd', number: 'singular', voice: 'active' },
@@ -98,6 +106,8 @@ const VERB_STEMS: Record<string, { dhatu: string; gana: number; forms?: Record<s
   'kur': {
     dhatu: 'kṛ',
     gana: 8,
+    upadesha: 'qukf\\Y',
+    code: '08.0010',
     forms: {
       vanti: { person: '3rd', number: 'plural', voice: 'active' },
       ute: { person: '3rd', number: 'singular', voice: 'middle' },
@@ -107,6 +117,8 @@ const VERB_STEMS: Record<string, { dhatu: string; gana: number; forms?: Record<s
   'jān': {
     dhatu: 'jñā',
     gana: 9,
+    upadesha: 'jYA\\',
+    code: '09.0043',
     forms: {
       āti: { person: '3rd', number: 'singular', voice: 'active' },
       anti: { person: '3rd', number: 'plural', voice: 'active' },
@@ -166,6 +178,8 @@ export function analyzeSanskritWord(inputWord: string): MorphAnalysis[] {
       root,
       dhatu: info.dhatu,
       gana: info.gana,
+      upadesha: info.upadesha,
+      dhatuCode: info.code,
       person: form.person,
       number: form.number,
       tense: 'present',
@@ -174,6 +188,35 @@ export function analyzeSanskritWord(inputWord: string): MorphAnalysis[] {
       label_en: `verb ${PERSON_LABEL[form.person].en} ${NUMBER_LABEL[form.number]} present ${voiceEn} (${root}, class ${info.gana}, stem ${stem}-)`,
       confidence: form.voice === 'middle' ? 0.9 : 0.95
     });
+  }
+
+  // 3a. i- and u-stems (vṛttayaḥ -> vṛtti, munayaḥ -> muni, guravaḥ -> guru)
+  const iuStems: Array<[string, string, MorphAnalysis['case'], MorphAnalysis['number'], string, string, number]> = [
+    ['ayaḥ', 'i', 'nominative', 'plural', 'nom. pl.', 'nom. pl.', 0.96],
+    ['avaḥ', 'u', 'nominative', 'plural', 'nom. pl.', 'nom. pl.', 0.96],
+    ['ibhiḥ', 'i', 'instrumental', 'plural', 'instr. pl.', 'instr. pl.', 0.9],
+    ['ubhiḥ', 'u', 'instrumental', 'plural', 'instr. pl.', 'instr. pl.', 0.9],
+    ['īnām', 'i', 'genitive', 'plural', 'gen. pl.', 'gen. pl.', 0.9],
+    ['ūnām', 'u', 'genitive', 'plural', 'gen. pl.', 'gen. pl.', 0.9],
+    ['iṣu', 'i', 'locative', 'plural', 'lok. pl.', 'loc. pl.', 0.9],
+    ['uṣu', 'u', 'locative', 'plural', 'lok. pl.', 'loc. pl.', 0.9],
+    ['iḥ', 'i', 'nominative', 'singular', 'nom. sg.', 'nom. sg.', 0.85],
+    ['uḥ', 'u', 'nominative', 'singular', 'nom. sg.', 'nom. sg.', 0.85]
+  ];
+  for (const [ending, vowel, kase, num, csLabel, enLabel, conf] of iuStems) {
+    if (iast.endsWith(ending) && iast.length > ending.length + 1) {
+      const stem = iast.slice(0, -ending.length) + vowel;
+      results.push({
+        lemma: stem,
+        pos: 'noun',
+        stem,
+        case: kase,
+        number: num,
+        label_cs: `kmen na -${vowel}, ${csLabel} (kmen ${stem})`,
+        label_en: `${vowel}-stem ${enLabel} (stem ${stem})`,
+        confidence: conf
+      });
+    }
   }
 
   // 3. Check Masculine/Neuter -a stem nouns (e.g. yoga, citta, dharma, karma)
