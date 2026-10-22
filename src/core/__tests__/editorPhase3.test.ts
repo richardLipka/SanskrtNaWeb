@@ -265,7 +265,7 @@ dṛṣṭvā tu pāṇḍavānīkaṁ vyūḍhaṁ duryodhanastadā ।
       expect(customElements.get('sanskrit-editor')).toBeDefined();
     });
 
-    it('instantiates and renders split-view editor with live verse preview', () => {
+    it('instantiates and renders the workspace with an on-demand verse preview', () => {
       const editor = document.createElement('sanskrit-editor') as SanskritEditorElement;
       editor.document = SAMPLE_DOCUMENT;
       editor.verse = SAMPLE_DOCUMENT.verses[0];
@@ -277,11 +277,15 @@ dṛṣṭvā tu pāṇḍavānīkaṁ vyūḍhaṁ duryodhanastadā ।
       expect(editor.innerHTML).toContain('Správce knihy');
       expect(editor.innerHTML).toContain('Konkordance');
 
-      // Verify live preview mount has <sanskrit-verse>
+      // Preview is shown on demand in an overlay panel
       const preview = editor.querySelector('#editor-preview-mount');
       expect(preview).not.toBeNull();
-      const childVerse = preview?.querySelector('sanskrit-verse');
-      expect(childVerse).not.toBeNull();
+      expect(preview?.querySelector('sanskrit-verse')).toBeNull();
+      (editor.querySelector('#btn-toggle-preview') as HTMLButtonElement).click();
+      expect((editor.querySelector('#editor-preview-overlay') as HTMLElement).hidden).toBe(false);
+      expect(editor.querySelector('#editor-preview-mount sanskrit-verse')).not.toBeNull();
+      (editor.querySelector('#btn-close-preview') as HTMLButtonElement).click();
+      expect((editor.querySelector('#editor-preview-overlay') as HTMLElement).hidden).toBe(true);
 
       // Verify IAST toolbar
       expect(editor.querySelector('.iast-toolbar')).not.toBeNull();
