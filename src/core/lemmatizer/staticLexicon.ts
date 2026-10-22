@@ -4,7 +4,8 @@
  *  - stems.tsv.gz: Monier-Williams headwords (Cologne CDSL) and Digital Corpus of Sanskrit
  *    lemmas, with corpus counts as compound member / as word and MW member boundaries;
  *  - compounds.tsv.gz: compounds and sandhi groups attested in the DCS with their members;
- *  - endings.tsv.gz: ending rules learned from the DCS annotation (kṣetre → kṣetra, n. loc. sg.).
+ *  - endings.tsv.gz: ending rules learned from the DCS annotation (kṣetre → kṣetra, n. loc. sg.);
+ *  - forms.tsv.gz: frequent word forms with their DCS lemmas (me → mad, ucyate → vac).
  * All keys are SLP1.
  */
 
@@ -58,7 +59,8 @@ export function orthographicKey(slp1: string): string {
 
 /** Final-sound key of a written word: karmaphalahetur / karmaphalahetuḥ → …hetuH. */
 export function pausaKey(slp1: string): string {
-  let w = slp1.replace(/^'+/, '');
+  // The avagraha is written or left out inconsistently (namo'stu / namostu)
+  let w = slp1.replace(/'/g, '');
   if (/[sSzr]$/.test(w) && w.length > 2) w = w.slice(0, -1) + 'H';
   else if (/[^aA]o$/.test(w)) w = w.slice(0, -1) + 'aH';
   else if (/m$/.test(w)) w = w.slice(0, -1) + 'M';
@@ -78,6 +80,8 @@ export class StaticLexicon {
   private readonly fin: Uint32Array;
   private readonly splits = new Map<number, string>();
   private readonly attested = new Map<string, AttestedSplit[]>();
+  /** Frequent word forms of the DCS: form → "lemma:count:feats …" (parsed on demand) */
+  private readonly forms = new Map<string, string>();
   /** Ending rules by the text they strip */
   private readonly endings = new Map<string, EndingRule[]>();
   private maxStrip = 0;
@@ -85,7 +89,7 @@ export class StaticLexicon {
   readonly totalCpd: number;
   readonly totalFin: number;
 
-  constructor(stemsTsv: string, compoundsTsv = '', endingsTsv = '') {
+  constructor(stemsTsv: string, compoundsTsv = '', endingsTsv = '', formsTsv = '') {
     const lines = stemsTsv.split('\n');
     this.flags = new Uint8Array(lines.length);
     this.cpd = new Uint32Array(lines.length);
@@ -138,6 +142,50 @@ export class StaticLexicon {
       if (list) list.push(rule); else this.endings.set(strip, [rule]);
       this.maxStrip = Math.max(this.maxStrip, strip.length);
     }
+
+    for (const line of formsTsv.split('\n')) {
+      if (!line || line.startsWith('#')) continue;
+      const tab = line.indexOf('\t');
+      this.forms.set(line.slice(0, tab), line.slice(tab + 1));
+    }
+  }
+
+  /**
+   * The Monier-Williams headword for a DCS lemma: the DCS cites -vat/-mat/-at stems in -ant
+   * (bhagavant, jagant), MW in -at (bhagavat, jagat).
+   */
+  dictionaryForm(lemma: string): string {
+    if (this.isMwHeadword(lemma)) return lemma;
+    if (/ant$/.test(lemma)) {
+      const at = lemma.slice(0, -3) + 'at';
+      if (this.isMwHeadword(at)) return at;
+    }
+    // Causatives (janay, dhāray, kṣāmay): Monier-Williams lists them under the root
+    if (/ay$/.test(lemma) && lemma.length > 4) {
+      const stem = lemma.slice(0, -2);
+      const roots = [
+        stem,
+        stem.replace(/A(?=[^aAiIuUfFeEoO]*$)/, 'a'),
+        stem.replace(/Ar(?=[^aAiIuUfFeEoO]*$)/, 'f'),
+        stem.replace(/ar(?=[^aAiIuUfFeEoO]*$)/, 'f'),
+        stem.replace(/e(?=[^aAiIuUfFeEoO]*$)/, 'i'),
+        stem.replace(/o(?=[^aAiIuUfFeEoO]*$)/, 'u'),
+        stem.replace(/E(?=[^aAiIuUfFeEoO]*$)/, 'i'),
+        stem.replace(/O(?=[^aAiIuUfFeEoO]*$)/, 'u')
+      ];
+      for (const r of roots) if (r !== stem || r === roots[0]) { if (this.isMwHeadword(r)) return r; }
+    }
+    return lemma;
+  }
+
+  /** Lemmas of a frequent word form as annotated in the DCS (me → mad, ucyate → vac), most frequent first. */
+  formLemmas(formSlp1: string): EndingAnalysis[] {
+    const row = this.forms.get(formSlp1);
+    if (!row) return [];
+    return row.split(' ').map((entry) => {
+      const [lemma, count, feats] = entry.split(':');
+      return { lemma: this.dictionaryForm(lemma), count: Number(count) || 0, label: featsLabel(feats || '') || (this.isIndeclinable(lemma) ? 'ind.' : '') };
+    });
   }
 
   /**
@@ -150,8 +198,9 @@ export class StaticLexicon {
       const strip = formSlp1.slice(-l);
       for (const rule of this.endings.get(strip) || []) {
         const candidate = formSlp1.slice(0, -l) + rule.add;
-        const lemma = this.index.has(candidate) ? candidate : this.find(candidate)[0];
-        if (!lemma) continue;
+        const found = this.index.has(candidate) ? candidate : this.find(candidate)[0];
+        if (!found) continue;
+        const lemma = this.dictionaryForm(found);
         const prev = out.get(lemma);
         if (!prev || prev.count < rule.count) out.set(lemma, { lemma, label: rule.label, count: rule.count });
       }
@@ -256,12 +305,13 @@ export async function loadStaticLexicon(baseUrl = defaultLexiconBaseUrl()): Prom
   loading = (async () => {
     try {
       const optional = (name: string) => fetch(`${baseUrl}${name}`).then((r) => (r.ok ? readMaybeGzip(r) : '')).catch(() => '');
-      const [stems, compounds, endings] = await Promise.all([
+      const [stems, compounds, endings, forms] = await Promise.all([
         fetch(`${baseUrl}stems.tsv.gz`).then((r) => (r.ok ? readMaybeGzip(r) : Promise.reject(new Error(`stems: HTTP ${r.status}`)))),
         optional('compounds.tsv.gz'),
-        optional('endings.tsv.gz')
+        optional('endings.tsv.gz'),
+        optional('forms.tsv.gz')
       ]);
-      lexicon = new StaticLexicon(stems, compounds, endings);
+      lexicon = new StaticLexicon(stems, compounds, endings, forms);
       return lexicon;
     } catch (err) {
       console.warn('[lexicon] Static compound lexicon not available:', err);

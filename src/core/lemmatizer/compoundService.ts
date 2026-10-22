@@ -19,6 +19,7 @@ import {
   SegmentMember,
   Segmentation,
   koshaCompoundLexicon,
+  finalFormVariants,
   segmentWord,
   splitAtHyphens
 } from './compoundSegmenter.ts';
@@ -34,7 +35,8 @@ export const TUNED_SCORING: Partial<ScoringOptions> = {
   lengthExponent: 2,
   freqWeight: 4,
   memberCost: 60,
-  divisibleCost: 200
+  divisibleCost: 200,
+  wordCost: 40
 };
 const MW_SPLIT_BONUS = 10;
 
@@ -86,7 +88,16 @@ export function buildCompoundLexicon(sources: { kosha?: Kosha | null; lexicon?: 
     formAnalyses(s) {
       let r = formCache.get(s);
       if (r) return r;
+      // Frequent forms as annotated in the DCS come first (me → mad, ucyate → vac)
+      // (the forms are stored with m, not anusvāra: mām, not māṃ)
+      const corpus: MemberAnalysis[] = lexicon
+        ? [...lexicon.formLemmas(s), ...(/M$/.test(s) ? lexicon.formLemmas(s.slice(0, -1) + 'm') : [])].map((a) => ({ lemma: a.lemma, label: a.label }))
+        : [];
       r = koshaLex ? koshaLex.formAnalyses(s) : [];
+      if (corpus.length) {
+        const known = new Set(corpus.map((a) => a.lemma));
+        r = [...corpus, ...r.filter((a) => !known.has(a.lemma))];
+      }
       if (!r.length && lexicon) {
         // Without the kosha: ending rules learned from the DCS, then the built-in lemmatizer,
         // the stems checked in the lexicon
@@ -96,7 +107,12 @@ export function buildCompoundLexicon(sources: { kosha?: Kosha | null; lexicon?: 
           seen.add(s);
           r.push({ lemma: s, label: 'ind.' });
         }
-        for (const a of lexicon.lemmatize(s).slice(0, 4)) {
+        // Rule frequency and lemma frequency together: śaśī → śaśin before śaśī
+        const byRule = lexicon.lemmatize(s)
+          .map((a) => ({ a, w: Math.log2(1 + a.count) + 2 * Math.log2(1 + lexicon.wordCount(a.lemma) + lexicon.memberCount(a.lemma)) }))
+          .sort((x, y) => y.w - x.w)
+          .map((x) => x.a);
+        for (const a of byRule.slice(0, 4)) {
           if (seen.has(a.lemma)) continue;
           seen.add(a.lemma);
           r.push({ lemma: a.lemma, label: a.label });
@@ -159,13 +175,24 @@ export interface CompoundAnalysis {
   /** Readings of the whole word when it is itself in the lexicon (lexicalized compound) */
   whole: Array<{ lemma: string; label: string }>;
   splits: CompoundSuggestion[];
+  /**
+   * 'whole' when the word reads better as one word (devānām, guṇebhyaḥ) than as any split;
+   * the splits are then only alternatives
+   */
+  recommended: 'split' | 'whole' | 'none';
   /** Sources that were available */
   sources: { kosha: boolean; lexicon: boolean };
 }
 
-/** Letters, combining marks and hyphens only (punctuation, daṇḍas and digits removed). */
+/**
+ * Letters, combining marks, hyphens and the avagraha (loko'sti = lokaḥ asti; ’ and ऽ are
+ * normalized to ') only; punctuation, daṇḍas and digits are removed.
+ */
 function cleanWord(word: string): string {
-  return word.normalize('NFC').toLowerCase().replace(/^['’]+/, '').replace(/[^\p{L}\p{M}\-‐‑]/gu, '');
+  return word.normalize('NFC').toLowerCase()
+    .replace(/[’ऽ]/g, "'")
+    .replace(/^'+/, '')
+    .replace(/[^\p{L}\p{M}\-‐‑']/gu, '');
 }
 
 function memberSuggestion(m: SegmentMember): CompoundMemberSuggestion {
@@ -230,7 +257,7 @@ export function analyzeCompoundSync(wordIast: string, options: AnalyzeOptions = 
   if (!word) return null;
   const partsIast = splitAtHyphens(word);
   // Letters without an SLP1 equivalent (stray marks, Vedic signs) would make Vidyut reject the word
-  const parts = partsIast.map((p) => toSlp1(p).replace(/[^a-zA-Z]/g, '')).filter(Boolean);
+  const parts = partsIast.map((p) => toSlp1(p).replace(/[^a-zA-Z']/g, '').replace(/'+$/, '')).filter(Boolean);
   if (!parts.length) return null;
   const res = segmentWord(parts, seg, { max: max + 4 });
 
@@ -264,7 +291,7 @@ export function analyzeCompoundSync(wordIast: string, options: AnalyzeOptions = 
         return {
           iast: toIast(m.form),
           role: isStem ? 'stem' : 'form',
-          lemma: toIast(asStem ? m.form : m.lemma),
+          lemma: toIast(asStem ? m.form : lexicon.dictionaryForm(m.lemma)),
           alternatives: asStem ? [toIast(m.lemma)] : [],
           label: isStem ? 'stem' : (lexicon.isIndeclinable(m.lemma) ? 'ind.' : lex.formAnalyses(m.form)[0]?.label)
         };
@@ -282,12 +309,31 @@ export function analyzeCompoundSync(wordIast: string, options: AnalyzeOptions = 
   const seen = new Set([...attested.map(lemmaKey), ...attested.map(formKey)]);
   const splits = [...attested, ...dictionary.filter((d) => !seen.has(lemmaKey(d)) && !seen.has(formKey(d)))].slice(0, max);
 
+  // Attested and hyphenated words are split; otherwise the better scoring reading wins, but
+  // only when the corpus uses the whole word's lemma as a word (devānām → deva,
+  // dhārtarāṣṭra). A lexicalized compound the corpus divides (dharmakṣetra) stays split;
+  // its own dictionary entry is listed in `whole`.
+  let recommended: CompoundAnalysis['recommended'] = splits.length ? 'split' : (res.whole.length ? 'whole' : 'none');
+  const wholeLemma = res.whole[0]?.lemma;
+  const corpusWord = !lexicon || (!!wholeLemma && lexicon.wordCount(wholeLemma) + lexicon.memberCount(wholeLemma) >= 3);
+  if (!attested.length && partsIast.length === 1 && res.whole.length && res.wholeScore !== undefined && corpusWord
+    && (!dictionary.length || res.wholeScore >= dictionary[0].score)) {
+    recommended = 'whole';
+  }
+  // A frequent word form beats a rare attested split of a similar spelling (yaḥ ≠ yā + u)
+  if (attested.length && lexicon && parts.length === 1) {
+    const asWord = finalFormVariants(parts[0]).reduce((n, v) => n + lexicon.formLemmas(v).reduce((m, a) => m + a.count, 0), 0);
+    const asSplit = attested.reduce((n, a) => n + (a.count || 0), 0);
+    if (asWord > asSplit && res.whole.length) recommended = 'whole';
+  }
+
   return {
     hyphenated: partsIast.length > 1,
     whole: Array.from(new Map(res.whole.map((a) => [`${a.lemma}|${a.label}`, a])).values())
       .slice(0, 4)
       .map((a) => ({ lemma: toIast(a.lemma), label: a.label })),
     splits,
+    recommended,
     sources: { kosha: !!kosha, lexicon: !!lexicon }
   };
 }

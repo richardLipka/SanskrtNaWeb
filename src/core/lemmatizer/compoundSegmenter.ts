@@ -56,6 +56,11 @@ export interface ScoringOptions {
   freqWeight: number;
   /** Cost of a member the lexicon marks as divisible */
   divisibleCost: number;
+  /**
+   * Cost of reading a non-final part as a separate inflected word joined by sandhi
+   * (lokaḥ + asti) instead of a compound member; Infinity = compounds only
+   */
+  wordCost: number;
 }
 
 export const DEFAULT_SCORING: ScoringOptions = {
@@ -64,7 +69,8 @@ export const DEFAULT_SCORING: ScoringOptions = {
   shortCost: 12,
   shortFinalCost: 30,
   freqWeight: 0,
-  divisibleCost: 0
+  divisibleCost: 0,
+  wordCost: Infinity
 };
 
 export interface SandhiCut {
@@ -94,6 +100,8 @@ export interface Segmentation {
 export interface SegmentResult {
   /** The word itself is in the lexicon (lexicalized compound or simple word) */
   whole: MemberAnalysis[];
+  /** Score of the one-member reading (comparable with the split scores) */
+  wholeScore?: number;
   /** Splits into ≥ 2 members, best first */
   splits: Segmentation[];
 }
@@ -119,7 +127,9 @@ export function finalFormVariants(slp1: string): string[] {
   const stem = slp1.slice(0, -1);
   const reverse: Record<string, string[]> = { v: ['u', 'U'], y: ['i', 'I'], r: ['s'], S: ['s'], z: ['s'], d: ['t'], g: ['k'], b: ['p'], q: ['w'], N: ['m', 'n'], Y: ['n', 'm'] };
   if (stem.length >= 2) for (const v of reverse[last] || []) out.push(stem + v);
-  return out;
+  // Corpus forms are written with visarga (lokas → lokaH)
+  for (const v of [...out]) if (/s$/.test(v) && v.length > 2) out.push(v.slice(0, -1) + 'H');
+  return Array.from(new Set(out));
 }
 
 /**
@@ -152,7 +162,8 @@ export class CompoundSegmenter {
       const analyses = finalFormVariants(slp1)
         .flatMap((v) => this.lexicon.formAnalyses(v))
         .map((a, i) => ({ a, i }))
-        .sort((x, y) => Number(Boolean(x.a.derived)) - Number(Boolean(y.a.derived)) || x.i - y.i)
+        // (and analysed forms before bare "word as cited" fallbacks: tapo → tapas, not tapo)
+        .sort((x, y) => Number(Boolean(x.a.derived)) - Number(Boolean(y.a.derived)) || Number(!x.a.label) - Number(!y.a.label) || x.i - y.i)
         .map((x) => x.a);
       if (analyses.length) {
         return { slp1, role: 'form', lemmas: Array.from(new Set(analyses.map((a) => a.lemma))), analyses };
@@ -195,16 +206,26 @@ export class CompoundSegmenter {
         const k = `${cut.first}+${cut.second}`;
         if (seen.has(k)) continue;
         seen.add(k);
+        const heads: Array<{ head: SegmentMember; score: number }> = [];
         const stems = this.lexicon.stemLemmas(cut.first);
-        if (!stems.length) continue;
-        const head: SegmentMember = { slp1: cut.first, role: 'stem', lemmas: stems, analyses: [] };
-        let headScore = this.scoreOf(head, false, finalRole);
-        if (/[aAiIuUfF]$/.test(cut.first) && /^[aAiIuUfFeEoO]/.test(cut.second)) {
-          if (/[AIUF]$/.test(cut.first)) headScore -= stems.includes('mahat') ? -LONG_VOWEL_AT_CUT : LONG_VOWEL_AT_CUT;
-          if (/^[AIUFEO]/.test(cut.second)) headScore -= LONG_VOWEL_AT_CUT;
+        if (stems.length) {
+          const head: SegmentMember = { slp1: cut.first, role: 'stem', lemmas: stems, analyses: [] };
+          let headScore = this.scoreOf(head, false, finalRole);
+          if (/[aAiIuUfF]$/.test(cut.first) && /^[aAiIuUfFeEoO]/.test(cut.second)) {
+            if (/[AIUF]$/.test(cut.first)) headScore -= stems.includes('mahat') ? -LONG_VOWEL_AT_CUT : LONG_VOWEL_AT_CUT;
+            if (/^[AIUFEO]/.test(cut.second)) headScore -= LONG_VOWEL_AT_CUT;
+          }
+          heads.push({ head, score: headScore });
         }
-        for (const rest of this.segment(cut.second, finalRole)) {
-          results.push({ members: [head, ...rest.members], score: headScore + rest.score });
+        // A separate inflected word joined by sandhi (loko'sti = lokaḥ asti), at a cost
+        if (finalRole === 'form' && Number.isFinite(this.scoring.wordCost)) {
+          const word = this.single(cut.first, 'form');
+          if (word && word.role === 'form') heads.push({ head: word, score: this.scoreOf(word, true, 'form') - this.scoring.wordCost });
+        }
+        for (const { head, score } of heads) {
+          for (const rest of this.segment(cut.second, finalRole)) {
+            results.push({ members: [head, ...rest.members], score: score + rest.score });
+          }
         }
       }
     }
@@ -259,6 +280,7 @@ export function segmentWord(
     if (whole) splits = splits.filter((s) => s.members.every((m) => m.slp1.length > 3));
     return {
       whole: whole ? (whole.members[0].analyses.length ? whole.members[0].analyses : whole.members[0].lemmas.map((l) => ({ lemma: l, label: '' }))) : [],
+      wholeScore: whole?.score,
       splits: splits.slice(0, max)
     };
   }
