@@ -5,6 +5,8 @@ export default defineConfig({
   build: {
     outDir: 'dist/lib',
     emptyOutDir: false,
+    // public/ (the compound lexicon data) belongs to the application, not to the library
+    copyPublicDir: false,
     lib: {
       entry: resolve(__dirname, 'src/lib.ts'),
       name: 'SanskrtNaWeb',
