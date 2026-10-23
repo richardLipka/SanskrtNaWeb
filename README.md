@@ -135,7 +135,7 @@ Profesionální prostředí pro překladatele a indology inspirované moderními
    - Tři řádky – dévanágarí, IAST a slova překladu; nad slovem v dévanágarí se zobrazí transliterace, lemma, gramatika a význam.
    - Kliknutím na sanskrtské slovo a poté na slovo překladu vznikne vazba, opětovným kliknutím se zruší; Shift + klik přiřadí celý úsek. Vazby jsou barevně odlišené a jejich seznam umožňuje jednotlivé vazby odebrat.
    - Tlačítko pro automatický návrh vazeb na základě slovníkové shody.
-   - **Složeniny a sandhi**: návrh rozdělení slova na všechny členy (kṛṣṇārjunasaṃvādaḥ → kṛṣṇa + arjuna + saṃvāda), ruční rozdělení („dharma + kṣetre“) i zpětné spojení; každý člen má vlastní slovníková hesla a vazby. Slova se spojovníkem (dharma-kṣetre) se při dělení verše na slova rozdělí automaticky. Vše běží v prohlížeči bez serveru a bez online služeb: WebAssembly balík Vidyut obsahuje jen rozdělovač sandhi (segmentátor *vidyut-cheda* ani lexikon *vidyut-kosha* v něm nejsou), proto má aplikace vlastní segmentátor ([`compoundService.ts`](src/core/lemmatizer/compoundService.ts), [`compoundSegmenter.ts`](src/core/lemmatizer/compoundSegmenter.ts)). Nejdřív nabídne rozdělení doložená v *Digital Corpus of Sanskrit*, jinak Vidyut navrhne místa řezu s obráceným sandhi a členy se ověří a seřadí podle statického lexikonu dodávaného s aplikací ([`public/lexicon/`](public/lexicon/), 3,9 MB: hesla Monier-Williams, četnosti, časté slovní tvary a pravidla koncovek z DCS). Rozdělí i slova spojená sandhi (pāṇḍavāścaiva → pāṇḍavāḥ + ca + eva, loko'sti → lokaḥ + asti) a pozná jednoduchá slova (devānām → deva). Stažený offline slovník Vidyut (`data-0.4.0.zip`, [`kosha/`](src/core/lemmatizer/kosha/)) je volitelný. Na složeninách z DCS je první návrh správný v ~77 %, na Bhagavadgītě v ~91 % slov (viz *Lexikon pro dělení složenin* níže).
+   - **Složeniny a sandhi**: návrh rozdělení slova na všechny členy (kṛṣṇārjunasaṃvādaḥ → kṛṣṇa + arjuna + saṃvāda), ruční rozdělení („dharma + kṣetre“) i zpětné spojení; každý člen má vlastní slovníková hesla a vazby. Slova se spojovníkem (dharma-kṣetre) se při dělení verše na slova rozdělí automaticky. Vše běží v prohlížeči bez serveru a bez online služeb: WebAssembly balík Vidyut obsahuje jen rozdělovač sandhi (segmentátor *vidyut-cheda* ani lexikon *vidyut-kosha* v něm nejsou), proto má aplikace vlastní segmentátor ([`compoundService.ts`](src/core/lemmatizer/compoundService.ts), [`compoundSegmenter.ts`](src/core/lemmatizer/compoundSegmenter.ts)). Nejdřív nabídne rozdělení doložená v *Digital Corpus of Sanskrit*, jinak Vidyut navrhne místa řezu s obráceným sandhi a členy se ověří a seřadí podle statického lexikonu dodávaného s aplikací ([`public/lexicon/`](public/lexicon/), 3,9 MB: hesla Monier-Williams, četnosti, časté slovní tvary a pravidla koncovek z DCS). Rozdělí i slova spojená sandhi (pāṇḍavāścaiva → pāṇḍavāḥ + ca + eva, loko'sti → lokaḥ + asti) a pozná jednoduchá slova (devānām → deva). Stažený offline slovník Vidyut (`data-0.4.0.zip`, [`kosha/`](src/core/lemmatizer/kosha/)) je volitelný. Segmentátor se dál vyvíjí v samostatném repozitáři *sanskrit-splitter* (viz *Lexikon pro dělení složenin* níže).
 4. **Správa a editace víceautorských komentářů**:
    - Rychlé předvolby komentátorů (*Śaṅkara*, *Rāmānuja*, *Śrīdhara*, *Madhva*, *Filipský & Vacek*).
    - In-place editace textu výkladu, tradice i citace pramene.
@@ -230,24 +230,7 @@ Samostatný WordPress plugin pro vkládání připravených bloků sanskrtských
 
 ### Lexikon pro dělení složenin
 
-Soubory v [`public/lexicon/`](public/lexicon/) se generují nástrojem [`tools/lexicon/build-lexicon.ts`](tools/lexicon/build-lexicon.ts) ze zdrojového textu Monier-Williams ([csl-orig](https://github.com/sanskrit-lexicon/csl-orig), `v02/mw/mw.txt`) a ze souborů CoNLL-U korpusu DCS ([OliverHellwig/sanskrit](https://github.com/OliverHellwig/sanskrit), `dcs/data/conllu`). Zdroje stahuje jen vývojář, aplikace je za běhu nepotřebuje:
-
-```bash
-npm run lexicon:build -- --mw <csl-orig>/v02/mw/mw.txt --dcs-git <klon OliverHellwig/sanskrit> --gold <složka pro testovací sadu>
-npm run lexicon:eval -- --gold <složka>/gold-compounds.tsv [--kosha data-0.4.0.zip]
-```
-
-Repozitář DCS má názvy souborů, které Windows nedokáže vytvořit, proto `--dcs-git` čte soubory přímo z gitu (stačí `git clone --filter=blob:none --sparse` a `git backfill --sparse`). Hodnocení porovnává první návrh s rozdělením v DCS (bez vyhledání v doložených rozděleních; validační vzorek 1 408 složenin, odlišný od vzorku pro ladění vah):
-
-| Nastavení | Správně 1. návrh | Správně mezi 3 |
-| :--- | :--- | :--- |
-| jen Vidyut kosha (předchozí verze) | 58,3 % | 74,6 % |
-| statický lexikon (výchozí, bez stahování) | 76,8 % | 89,1 % |
-| statický lexikon + Vidyut kosha | 75,9 % | 89,3 % |
-
-Slovo, které segmentátor doporučí ponechat celé, se zde počítá jako chyba (všechna slova sady jsou složeniny).
-
-**Ověření na Bhagavadgītě** (text sanskritdocuments.org; verze ITRANS a dévanágarí se po transliteraci shodují ve 700 ze 701 veršů; Gītā v DCS není, takže doložená rozdělení výsledek nezkreslují): 6 455 slov včetně skupin spojených sandhi, rozbor pro 99,9 % slov, 98,5 % navržených lemmat je heslem Monier-Williams (vzorek 80 lemmat ověřený online v Kolínském API se s offline kontrolou shodoval úplně). Ruční posouzení (rozdělení a lemmata vhodná pro dohledání a překlad, posuzované jazykovým modelem v kontextu verše) na náhodném vzorku 101 slov odděleném od vzorku použitého při ladění: 91 % správně, 6 % částečně (správné dělení, jedno lemma chybně), 3 % chybně.
+Segmentátor složenin a sandhi se vyvíjí v samostatném (zatím neveřejném) repozitáři **sanskrit-splitter** ([gitlab.kiv.zcu.cz/lipka/sanskrit-splitter](https://gitlab.kiv.zcu.cz/lipka/sanskrit-splitter)). Tam jsou nástroje pro sestavení lexikonu ze zdrojů (Monier-Williams z [csl-orig](https://github.com/sanskrit-lexicon/csl-orig), DCS z [OliverHellwig/sanskrit](https://github.com/OliverHellwig/sanskrit)), jeho vyhodnocení, výzkumná zpráva a plán benchmarků. Aplikace obsahuje zmrazenou kopii segmentátoru ([`src/core/lemmatizer/`](src/core/lemmatizer/)) a lexikonu ([`public/lexicon/`](public/lexicon/)) z doby oddělení (SanskrtNaWeb `5c0c056`), dokud knihovna nevyjde; pak na ni aplikace přejde jako na závislost.
 
 ## 📄 Licence
 

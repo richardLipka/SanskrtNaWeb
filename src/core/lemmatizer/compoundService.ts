@@ -27,7 +27,7 @@ import { isVidyutReady, loadVidyutWasm, splitSandhiSlp1, transliterateLipi } fro
 import { analyzeSanskritWord } from './sanskritLemmatizer.ts';
 
 /**
- * Tuned on DCS compounds with tools/lexicon/evaluate-segmenter.ts: corpus frequency of the
+ * Tuned on DCS compounds with tools/lexicon/evaluate-segmenter.ts (sanskrit-splitter repository): corpus frequency of the
  * members, a high cost per member (it balances the frequency bonus every member brings) and
  * a cost for lexicalized compounds the corpus divides further (vidyārambha).
  */

@@ -50,7 +50,7 @@ afterEach(() => {
   useStaticLexicon(null);
 });
 
-/** The lexicon served with the app (public/lexicon, built by tools/lexicon/build-lexicon.ts) */
+/** The lexicon served with the app (public/lexicon, built by tools/lexicon/build-lexicon.ts in the sanskrit-splitter repository) */
 const LEXICON_DIR = join(process.cwd(), 'public', 'lexicon');
 const hasLexicon = existsSync(join(LEXICON_DIR, 'stems.tsv.gz'));
 let shippedLexicon: StaticLexicon | null = null;

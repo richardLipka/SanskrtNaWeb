@@ -41,9 +41,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "vidyut:check": "node tools/vidyut-harness/check-upstream.mjs",
-    "vidyut:test": "node tools/vidyut-harness/harness-test.mjs",
-    "lexicon:build": "vite-node tools/lexicon/build-lexicon.ts --",
-    "lexicon:eval": "vite-node tools/lexicon/evaluate-segmenter.ts --"
+    "vidyut:test": "node tools/vidyut-harness/harness-test.mjs"
   },
   "dependencies": {
     "@siva-sh/vidyut": "^0.3.0",

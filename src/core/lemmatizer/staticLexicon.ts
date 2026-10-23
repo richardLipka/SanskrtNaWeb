@@ -1,6 +1,6 @@
 /**
  * Static compound lexicon served with the application (public/lexicon/, built by
- * tools/lexicon/build-lexicon.ts). Works without a server, database or online service:
+ * tools/lexicon/build-lexicon.ts in the sanskrit-splitter repository). Works without a server, database or online service:
  *  - stems.tsv.gz: Monier-Williams headwords (Cologne CDSL) and Digital Corpus of Sanskrit
  *    lemmas, with corpus counts as compound member / as word and MW member boundaries;
  *  - compounds.tsv.gz: compounds and sandhi groups attested in the DCS with their members;
